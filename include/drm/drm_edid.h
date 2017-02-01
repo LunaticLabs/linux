@@ -248,6 +248,7 @@ struct detailed_timing {
 # define DRM_ELD_AUD_SYNCH_DELAY_MAX	0xfa	/* 500 ms */
 
 #define DRM_ELD_SPEAKER			7
+# define DRM_ELD_SPEAKER_MASK		0x7f
 # define DRM_ELD_SPEAKER_RLRC		(1 << 6)
 # define DRM_ELD_SPEAKER_FLRC		(1 << 5)
 # define DRM_ELD_SPEAKER_RC		(1 << 4)
@@ -330,7 +331,6 @@ int drm_edid_to_sad(struct edid *edid, struct cea_sad **sads);
 int drm_edid_to_speaker_allocation(struct edid *edid, u8 **sadb);
 int drm_av_sync_delay(struct drm_connector *connector,
 		      const struct drm_display_mode *mode);
-struct drm_connector *drm_select_eld(struct drm_encoder *encoder);
 
 #ifdef CONFIG_DRM_LOAD_EDID_FIRMWARE
 int drm_load_edid_firmware(struct drm_connector *connector);
@@ -412,6 +412,18 @@ static inline int drm_eld_calc_baseline_block_size(const uint8_t *eld)
 static inline int drm_eld_size(const uint8_t *eld)
 {
 	return DRM_ELD_HEADER_BLOCK_SIZE + eld[DRM_ELD_BASELINE_ELD_LEN] * 4;
+}
+
+/**
+ * drm_eld_get_spk_alloc - Get speaker allocation
+ * @eld: pointer to an ELD memory structure
+ *
+ * The returned value is the speakers mask. User has to use %DRM_ELD_SPEAKER
+ * field definitions to identify speakers.
+ */
+static inline u8 drm_eld_get_spk_alloc(const uint8_t *eld)
+{
+	return eld[DRM_ELD_SPEAKER] & DRM_ELD_SPEAKER_MASK;
 }
 
 /**
