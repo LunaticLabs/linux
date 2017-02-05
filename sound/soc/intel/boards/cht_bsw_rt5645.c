@@ -213,6 +213,10 @@ static struct snd_soc_jack_pin cht_bsw_jack_pins[] = {
 		.mask	= SND_JACK_HEADPHONE,
 	},
 	{
+		.pin	= "Headset",
+		.mask	= SND_JACK_HEADSET,
+	},
+	{
 		.pin	= "Headset Mic",
 		.mask	= SND_JACK_MICROPHONE,
 	},
@@ -308,7 +312,7 @@ static int cht_codec_init(struct snd_soc_pcm_runtime *runtime)
 					SND_JACK_BTN_0 | SND_JACK_BTN_1 |
 					SND_JACK_BTN_2 | SND_JACK_BTN_3;
 	else
-		jack_type = SND_JACK_HEADPHONE | SND_JACK_MICROPHONE;
+		jack_type = SND_JACK_HEADPHONE | SND_JACK_HEADSET | SND_JACK_BTN_0;
 
 	ret = snd_soc_card_jack_new(runtime->card, "Headset",
 				    jack_type, &ctx->jack,
@@ -650,7 +654,7 @@ static int snd_cht_mc_probe(struct platform_device *pdev)
 
 		if (!pkg_found) {
 			/* no BIOS indications, assume SSP0-AIF2 connection */
-			cht_rt5645_quirk |= CHT_RT5645_SSP0_AIF2;
+			cht_rt5645_quirk |= CHT_RT5645_SSP0_AIF1;
 		}
 	}
 
