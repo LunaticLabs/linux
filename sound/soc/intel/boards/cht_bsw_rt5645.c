@@ -19,7 +19,7 @@
  *
  * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
  */
-
+#define DEBUG 1
 #include <linux/module.h>
 #include <linux/acpi.h>
 #include <linux/platform_device.h>
@@ -213,10 +213,6 @@ static struct snd_soc_jack_pin cht_bsw_jack_pins[] = {
 		.mask	= SND_JACK_HEADPHONE,
 	},
 	{
-		.pin	= "Headset",
-		.mask	= SND_JACK_HEADSET,
-	},
-	{
 		.pin	= "Headset Mic",
 		.mask	= SND_JACK_MICROPHONE,
 	},
@@ -312,7 +308,7 @@ static int cht_codec_init(struct snd_soc_pcm_runtime *runtime)
 					SND_JACK_BTN_0 | SND_JACK_BTN_1 |
 					SND_JACK_BTN_2 | SND_JACK_BTN_3;
 	else
-		jack_type = SND_JACK_HEADPHONE | SND_JACK_HEADSET | SND_JACK_BTN_0;
+		jack_type = SND_JACK_HEADPHONE | SND_JACK_MICROPHONE;
 
 	ret = snd_soc_card_jack_new(runtime->card, "Headset",
 				    jack_type, &ctx->jack,
