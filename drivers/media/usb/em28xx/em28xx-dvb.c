@@ -37,6 +37,7 @@
 
 #include "lgdt330x.h"
 #include "lgdt3305.h"
+#include "lgdt3306a.h"
 #include "zl10353.h"
 #include "s5h1409.h"
 #include "mt2060.h"
@@ -204,7 +205,7 @@ static int em28xx_start_streaming(struct em28xx_dvb *dvb)
 	if (dev->dvb_xfer_bulk) {
 		if (!dev->dvb_ep_bulk)
 			return -ENODEV;
-		dvb_max_packet_size = 512; /* USB 2.0 spec */
+		dvb_max_packet_size = 188;
 		packet_multiplier = EM28XX_DVB_BULK_PACKET_MULTIPLIER;
 		dvb_alt = 0;
 	} else { /* isoc */
@@ -217,8 +218,10 @@ static int em28xx_start_streaming(struct em28xx_dvb *dvb)
 		dvb_alt = dev->dvb_alt_isoc;
 	}
 
-	usb_set_interface(udev, dev->ifnum, dvb_alt);
-	rc = em28xx_set_mode(dev, EM28XX_DIGITAL_MODE);
+	
+	/* moved to em28xx_dvb_init*/
+	//usb_set_interface(dev->udev, dev->ifnum, dvb_alt);
+    rc = em28xx_set_mode(dev, EM28XX_DIGITAL_MODE);
 	if (rc < 0)
 		return rc;
 
@@ -1116,7 +1119,7 @@ static void em28xx_unregister_dvb(struct em28xx_dvb *dvb)
 
 static int em28xx_dvb_init(struct em28xx *dev)
 {
-	int result = 0;
+	int result = 0, dvb_alt = 0;
 	struct em28xx_dvb *dvb;
 
 	if (dev->is_audio_only) {
@@ -1143,7 +1146,7 @@ static int em28xx_dvb_init(struct em28xx *dev)
 		result = em28xx_alloc_urbs(dev, EM28XX_DIGITAL_MODE,
 					   dev->dvb_xfer_bulk,
 					   EM28XX_DVB_NUM_BUFS,
-					   512,
+					   188,
 					   EM28XX_DVB_BULK_PACKET_MULTIPLIER);
 	} else {
 		result = em28xx_alloc_urbs(dev, EM28XX_DIGITAL_MODE,
@@ -1901,7 +1904,8 @@ static int em28xx_dvb_init(struct em28xx *dev)
 			si2168_config.ts_mode = SI2168_TS_SERIAL;
 			memset(&info, 0, sizeof(struct i2c_board_info));
 			strlcpy(info.type, "si2168", I2C_NAME_SIZE);
-			info.addr = 0x64;
+			if(dev->ts == PRIMARY_TS) info.addr = 0x64;
+			else info.addr = 0x67;
 			info.platform_data = &si2168_config;
 			request_module(info.type);
 			client = i2c_new_device(&dev->i2c_adap[dev->def_i2c_bus], &info);
@@ -1927,7 +1931,85 @@ static int em28xx_dvb_init(struct em28xx *dev)
 #endif
 			memset(&info, 0, sizeof(struct i2c_board_info));
 			strlcpy(info.type, "si2157", I2C_NAME_SIZE);
-			info.addr = 0x60;
+			if(dev->ts == PRIMARY_TS) info.addr = 0x60;
+			else info.addr = 0x63;
+			info.platform_data = &si2157_config;
+			request_module(info.type);
+			client = i2c_new_device(adapter, &info);
+			if (client == NULL || client->dev.driver == NULL) {
+				module_put(dvb->i2c_client_demod->dev.driver->owner);
+				i2c_unregister_device(dvb->i2c_client_demod);
+				result = -ENODEV;
+				goto out_free;
+			}
+
+			if (!try_module_get(client->dev.driver->owner)) {
+				i2c_unregister_device(client);
+				module_put(dvb->i2c_client_demod->dev.driver->owner);
+				i2c_unregister_device(dvb->i2c_client_demod);
+				result = -ENODEV;
+				goto out_free;
+			}
+			
+			dvb->i2c_client_tuner = client;
+		}
+		break;
+	case EM28174_BOARD_HAUPPAUGE_WINTV_DUALHD_ATSC:
+		{
+			struct i2c_adapter *adapter;
+			struct i2c_client *client;
+			struct i2c_board_info info;
+			struct lgdt3306a_config lgdt3306a_config;
+			struct si2157_config si2157_config;
+
+			/* attach demod */
+			memset(&lgdt3306a_config, 0, sizeof(lgdt3306a_config));
+			lgdt3306a_config.i2c_adapter = &adapter;
+			lgdt3306a_config.fe = &dvb->fe[0];
+			if(dev->ts == PRIMARY_TS) lgdt3306a_config.i2c_addr = 0x59;
+			else lgdt3306a_config.i2c_addr = 0x0e;
+			lgdt3306a_config.qam_if_khz         = 4000;
+			lgdt3306a_config.vsb_if_khz         = 3250;
+			lgdt3306a_config.deny_i2c_rptr      = 1;
+			lgdt3306a_config.spectral_inversion = 1;
+			lgdt3306a_config.mpeg_mode          = LGDT3306A_MPEG_SERIAL;
+			lgdt3306a_config.tpclk_edge         = LGDT3306A_TPCLK_RISING_EDGE;
+			lgdt3306a_config.tpvalid_polarity   = LGDT3306A_TP_VALID_HIGH;
+			lgdt3306a_config.xtalMHz            = 25;
+			lgdt3306a_config.has_tuner_i2c_adapter = 1;
+			memset(&info, 0, sizeof(struct i2c_board_info));
+			strlcpy(info.type, "lgdt3306a", I2C_NAME_SIZE);
+			if(dev->ts == PRIMARY_TS) info.addr = 0x59;
+			else info.addr = 0x0e;
+			info.platform_data = &lgdt3306a_config;
+			request_module(info.type);
+			client = i2c_new_device(&dev->i2c_adap[dev->def_i2c_bus], &info);
+			if (client == NULL || client->dev.driver == NULL) {
+				result = -ENODEV;
+				goto out_free;
+			}
+
+			if (!try_module_get(client->dev.driver->owner)) {
+				i2c_unregister_device(client);
+				result = -ENODEV;
+				goto out_free;
+			}
+			
+			dvb->fe[0]->ops.i2c_gate_ctrl = NULL;
+			dvb->i2c_client_demod = client;
+
+			/* attach tuner */
+			memset(&si2157_config, 0, sizeof(si2157_config));
+			si2157_config.fe = dvb->fe[0];
+			si2157_config.if_port = 1;
+			si2157_config.inversion = true;
+#ifdef CONFIG_MEDIA_CONTROLLER_DVB
+			si2157_config.mdev = dev->media_dev;
+#endif
+			memset(&info, 0, sizeof(struct i2c_board_info));
+			strlcpy(info.type, "si2157", I2C_NAME_SIZE);
+			if(dev->ts == PRIMARY_TS) info.addr = 0x60;
+			else info.addr = 0x62;
 			info.platform_data = &si2157_config;
 			request_module(info.type);
 			client = i2c_new_device(adapter, &info);
@@ -1947,7 +2029,6 @@ static int em28xx_dvb_init(struct em28xx *dev)
 			}
 
 			dvb->i2c_client_tuner = client;
-
 		}
 		break;
 	default:
@@ -1970,6 +2051,14 @@ static int em28xx_dvb_init(struct em28xx *dev)
 
 	if (result < 0)
 		goto out_free;
+    
+	if (dev->dvb_xfer_bulk) {
+		dvb_alt = 0;
+	} else { /* isoc */
+		dvb_alt = dev->dvb_alt_isoc;
+	}
+    
+	usb_set_interface(interface_to_usbdev(dev->intf), dev->ifnum, dvb_alt);
 
 	dev_info(&dev->intf->dev, "DVB extension successfully initialized\n");
 
