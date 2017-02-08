@@ -3458,7 +3458,8 @@ int em28xx_duplicate_dev(struct em28xx *dev)
 	memcpy(sec_dev,dev,sizeof(struct em28xx));
 	nr = find_first_zero_bit(em28xx_devused, EM28XX_MAXBOARDS);
 	sec_dev->devno = nr;
-	snprintf(sec_dev->board.name, 28, "em28xx #%d",nr);
+	//snprintf(tempName, 28, "em28xx #%d",nr);
+	dev_set_name(&sec_dev->intf->dev, "em28xx #%d", nr);
 	dev->dev_next=sec_dev;
 	sec_dev->dev_next=NULL;
 	return 0;
@@ -3853,7 +3854,7 @@ static void em28xx_usb_disconnect(struct usb_interface *interface)
 	if(dev->dev_next!=NULL) {
 		dev->dev_next->disconnected = 1;
 		
-		dev_err(&dev->intf->dev, "Disconnecting %s\n", dev->dev_next->board.name);
+		dev_err(&dev->dev_next->intf->dev, "Disconnecting\n");
 		
 		flush_request_modules(dev->dev_next);
 	}
