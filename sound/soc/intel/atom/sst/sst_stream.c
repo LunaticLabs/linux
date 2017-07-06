@@ -19,6 +19,7 @@
  *
  * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
  */
+#define DEBUG 1
 #include <linux/pci.h>
 #include <linux/firmware.h>
 #include <linux/sched.h>
@@ -171,7 +172,7 @@ int sst_send_byte_stream_mrfld(struct intel_sst_drv *sst_drv_ctx,
 		"type:%u ipc_msg:%u block:%u task_id:%u pipe: %#x length:%#x\n",
 		bytes->type, bytes->ipc_msg, bytes->block, bytes->task_id,
 		bytes->pipe_id, bytes->len);
-
+	dev_dbg(sst_drv_ctx->dev, "filename:%s\n", sst_drv_ctx->firmware_name);
 	if (sst_create_ipc_msg(&msg, true))
 		return -ENOMEM;
 

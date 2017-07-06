@@ -436,7 +436,7 @@ static const struct snd_soc_ops cht_be_ssp2_ops = {
 
 static struct snd_soc_dai_link cht_dailink[] = {
 	[MERR_DPCM_AUDIO] = {
-		.name = "Audio Port",
+		.name = "AudioPort",
 		.stream_name = "Audio",
 		.cpu_dai_name = "media-cpu-dai",
 		.codec_dai_name = "snd-soc-dummy-dai",
@@ -449,7 +449,7 @@ static struct snd_soc_dai_link cht_dailink[] = {
 		.ops = &cht_aif1_ops,
 	},
 	[MERR_DPCM_DEEP_BUFFER] = {
-		.name = "Deep-Buffer Audio Port",
+		.name = "DeepBufferAudioPort",
 		.stream_name = "Deep-Buffer Audio",
 		.cpu_dai_name = "deepbuffer-cpu-dai",
 		.codec_dai_name = "snd-soc-dummy-dai",
@@ -461,7 +461,7 @@ static struct snd_soc_dai_link cht_dailink[] = {
 		.ops = &cht_aif1_ops,
 	},
 	[MERR_DPCM_COMPR] = {
-		.name = "Compressed Port",
+		.name = "CompressedPort",
 		.stream_name = "Compress",
 		.cpu_dai_name = "compress-cpu-dai",
 		.codec_dai_name = "snd-soc-dummy-dai",
