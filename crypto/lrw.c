@@ -286,8 +286,11 @@ static int init_crypt(struct skcipher_request *req, crypto_completion_t done)
 
 	subreq->cryptlen = LRW_BUFFER_SIZE;
 	if (req->cryptlen > LRW_BUFFER_SIZE) {
-		subreq->cryptlen = min(req->cryptlen, (unsigned)PAGE_SIZE);
-		rctx->ext = kmalloc(subreq->cryptlen, gfp);
+		unsigned int n = min(req->cryptlen, (unsigned int)PAGE_SIZE);
+
+		rctx->ext = kmalloc(n, gfp);
+		if (rctx->ext)
+			subreq->cryptlen = n;
 	}
 
 	rctx->src = req->src;
@@ -325,9 +328,7 @@ static int do_encrypt(struct skcipher_request *req, int err)
 		      crypto_skcipher_encrypt(subreq) ?:
 		      post_crypt(req);
 
-		if (err == -EINPROGRESS ||
-		    (err == -EBUSY &&
-		     req->base.flags & CRYPTO_TFM_REQ_MAY_BACKLOG))
+		if (err == -EINPROGRESS || err == -EBUSY)
 			return err;
 	}
 
@@ -342,6 +343,13 @@ static void encrypt_done(struct crypto_async_request *areq, int err)
 	struct rctx *rctx;
 
 	rctx = skcipher_request_ctx(req);
+
+	if (err == -EINPROGRESS) {
+		if (rctx->left != req->cryptlen)
+			return;
+		goto out;
+	}
+
 	subreq = &rctx->subreq;
 	subreq->base.flags &= CRYPTO_TFM_REQ_MAY_BACKLOG;
 
@@ -349,6 +357,7 @@ static void encrypt_done(struct crypto_async_request *areq, int err)
 	if (rctx->left)
 		return;
 
+out:
 	skcipher_request_complete(req, err);
 }
 
@@ -369,9 +378,7 @@ static int do_decrypt(struct skcipher_request *req, int err)
 		      crypto_skcipher_decrypt(subreq) ?:
 		      post_crypt(req);
 
-		if (err == -EINPROGRESS ||
-		    (err == -EBUSY &&
-		     req->base.flags & CRYPTO_TFM_REQ_MAY_BACKLOG))
+		if (err == -EINPROGRESS || err == -EBUSY)
 			return err;
 	}
 
@@ -386,6 +393,13 @@ static void decrypt_done(struct crypto_async_request *areq, int err)
 	struct rctx *rctx;
 
 	rctx = skcipher_request_ctx(req);
+
+	if (err == -EINPROGRESS) {
+		if (rctx->left != req->cryptlen)
+			return;
+		goto out;
+	}
+
 	subreq = &rctx->subreq;
 	subreq->base.flags &= CRYPTO_TFM_REQ_MAY_BACKLOG;
 
@@ -393,6 +407,7 @@ static void decrypt_done(struct crypto_async_request *areq, int err)
 	if (rctx->left)
 		return;
 
+out:
 	skcipher_request_complete(req, err);
 }
 
@@ -591,9 +606,12 @@ static int create(struct crypto_template *tmpl, struct rtattr **tb)
 		ecb_name[len - 1] = 0;
 
 		if (snprintf(inst->alg.base.cra_name, CRYPTO_MAX_ALG_NAME,
-			     "lrw(%s)", ecb_name) >= CRYPTO_MAX_ALG_NAME)
-			return -ENAMETOOLONG;
-	}
+			     "lrw(%s)", ecb_name) >= CRYPTO_MAX_ALG_NAME) {
+			err = -ENAMETOOLONG;
+			goto err_drop_spawn;
+		}
+	} else
+		goto err_drop_spawn;
 
 	inst->alg.base.cra_flags = alg->base.cra_flags & CRYPTO_ALG_ASYNC;
 	inst->alg.base.cra_priority = alg->base.cra_priority;

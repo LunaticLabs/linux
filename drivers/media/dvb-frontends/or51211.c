@@ -16,10 +16,6 @@
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  *    GNU General Public License for more details.
  *
- *    You should have received a copy of the GNU General Public License
- *    along with this program; if not, write to the Free Software
- *    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
- *
 */
 
 #define pr_fmt(fmt)	KBUILD_MODNAME ": %s: " fmt, __func__
@@ -40,8 +36,8 @@
 #include <linux/slab.h>
 #include <asm/byteorder.h>
 
-#include "dvb_math.h"
-#include "dvb_frontend.h"
+#include <media/dvb_math.h>
+#include <media/dvb_frontend.h>
 #include "or51211.h"
 
 static int debug;

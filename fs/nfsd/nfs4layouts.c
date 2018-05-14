@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (c) 2014 Christoph Hellwig.
  */
@@ -335,7 +336,7 @@ nfsd4_recall_file_layout(struct nfs4_layout_stateid *ls)
 
 	trace_layout_recall(&ls->ls_stid.sc_stateid);
 
-	atomic_inc(&ls->ls_stid.sc_count);
+	refcount_inc(&ls->ls_stid.sc_count);
 	nfsd4_run_cb(&ls->ls_recall);
 
 out_unlock:
@@ -440,7 +441,7 @@ nfsd4_insert_layout(struct nfsd4_layoutget *lgp, struct nfs4_layout_stateid *ls)
 			goto done;
 	}
 
-	atomic_inc(&ls->ls_stid.sc_count);
+	refcount_inc(&ls->ls_stid.sc_count);
 	list_add_tail(&new->lo_perstate, &ls->ls_layouts);
 	new = NULL;
 done:
@@ -614,6 +615,7 @@ nfsd4_cb_layout_fail(struct nfs4_layout_stateid *ls)
 {
 	struct nfs4_client *clp = ls->ls_stid.sc_client;
 	char addr_str[INET6_ADDRSTRLEN];
+	static char const nfsd_recall_failed[] = "/sbin/nfsd-recall-failed";
 	static char *envp[] = {
 		"HOME=/",
 		"TERM=linux",
@@ -629,12 +631,13 @@ nfsd4_cb_layout_fail(struct nfs4_layout_stateid *ls)
 		"nfsd: client %s failed to respond to layout recall. "
 		"  Fencing..\n", addr_str);
 
-	argv[0] = "/sbin/nfsd-recall-failed";
+	argv[0] = (char *)nfsd_recall_failed;
 	argv[1] = addr_str;
 	argv[2] = ls->ls_file->f_path.mnt->mnt_sb->s_id;
 	argv[3] = NULL;
 
-	error = call_usermodehelper(argv[0], argv, envp, UMH_WAIT_PROC);
+	error = call_usermodehelper(nfsd_recall_failed, argv, envp,
+				    UMH_WAIT_PROC);
 	if (error) {
 		printk(KERN_ERR "nfsd: fence failed for client %s: %d!\n",
 			addr_str, error);

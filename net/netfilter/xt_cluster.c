@@ -121,9 +121,6 @@ xt_cluster_mt(const struct sk_buff *skb, struct xt_action_param *par)
 	if (ct == NULL)
 		return false;
 
-	if (nf_ct_is_untracked(ct))
-		return false;
-
 	if (ct->master)
 		hash = xt_cluster_hash(ct->master, info);
 	else
@@ -138,14 +135,12 @@ static int xt_cluster_mt_checkentry(const struct xt_mtchk_param *par)
 	struct xt_cluster_match_info *info = par->matchinfo;
 
 	if (info->total_nodes > XT_CLUSTER_NODES_MAX) {
-		pr_info("you have exceeded the maximum "
-			"number of cluster nodes (%u > %u)\n",
-			info->total_nodes, XT_CLUSTER_NODES_MAX);
+		pr_info_ratelimited("you have exceeded the maximum number of cluster nodes (%u > %u)\n",
+				    info->total_nodes, XT_CLUSTER_NODES_MAX);
 		return -EINVAL;
 	}
 	if (info->node_mask >= (1ULL << info->total_nodes)) {
-		pr_info("this node mask cannot be "
-			"higher than the total number of nodes\n");
+		pr_info_ratelimited("node mask cannot exceed total number of nodes\n");
 		return -EDOM;
 	}
 	return 0;

@@ -103,7 +103,7 @@ static int dwmac4_wrback_get_rx_status(void *data, struct stmmac_extra_stats *x,
 			x->rx_mii++;
 
 		if (unlikely(rdes3 & RDES3_CRC_ERROR)) {
-			x->rx_crc++;
+			x->rx_crc_errors++;
 			stats->rx_crc_errors++;
 		}
 
@@ -214,13 +214,13 @@ static int dwmac4_wrback_get_tx_timestamp_status(struct dma_desc *p)
 {
 	/* Context type from W/B descriptor must be zero */
 	if (le32_to_cpu(p->des3) & TDES3_CONTEXT_TYPE)
-		return -EINVAL;
+		return 0;
 
 	/* Tx Timestamp Status is 1 so des0 and des1'll have valid values */
 	if (le32_to_cpu(p->des3) & TDES3_TIMESTAMP_STATUS)
-		return 0;
+		return 1;
 
-	return 1;
+	return 0;
 }
 
 static inline u64 dwmac4_get_timestamp(void *desc, u32 ats)
@@ -258,7 +258,8 @@ static int dwmac4_rx_check_timestamp(void *desc)
 	return ret;
 }
 
-static int dwmac4_wrback_get_rx_timestamp_status(void *desc, u32 ats)
+static int dwmac4_wrback_get_rx_timestamp_status(void *desc, void *next_desc,
+						 u32 ats)
 {
 	struct dma_desc *p = (struct dma_desc *)desc;
 	int ret = -EINVAL;
@@ -270,19 +271,22 @@ static int dwmac4_wrback_get_rx_timestamp_status(void *desc, u32 ats)
 
 			/* Check if timestamp is OK from context descriptor */
 			do {
-				ret = dwmac4_rx_check_timestamp(desc);
+				ret = dwmac4_rx_check_timestamp(next_desc);
 				if (ret < 0)
 					goto exit;
 				i++;
 
-			} while ((ret == 1) || (i < 10));
+			} while ((ret == 1) && (i < 10));
 
 			if (i == 10)
 				ret = -EBUSY;
 		}
 	}
 exit:
-	return ret;
+	if (likely(ret == 0))
+		return 1;
+
+	return 0;
 }
 
 static void dwmac4_rd_init_rx_desc(struct dma_desc *p, int disable_rx_ic,
@@ -304,12 +308,13 @@ static void dwmac4_rd_init_tx_desc(struct dma_desc *p, int mode, int end)
 
 static void dwmac4_rd_prepare_tx_desc(struct dma_desc *p, int is_fs, int len,
 				      bool csum_flag, int mode, bool tx_own,
-				      bool ls)
+				      bool ls, unsigned int tot_pkt_len)
 {
 	unsigned int tdes3 = le32_to_cpu(p->des3);
 
 	p->des2 |= cpu_to_le32(len & TDES2_BUFFER1_SIZE_MASK);
 
+	tdes3 |= tot_pkt_len & TDES3_PACKET_SIZE_MASK;
 	if (is_fs)
 		tdes3 |= TDES3_FIRST_DESCRIPTOR;
 	else
@@ -329,7 +334,7 @@ static void dwmac4_rd_prepare_tx_desc(struct dma_desc *p, int is_fs, int len,
 	if (tx_own)
 		tdes3 |= TDES3_OWN;
 
-	if (is_fs & tx_own)
+	if (is_fs && tx_own)
 		/* When the own bit, for the first frame, has to be set, all
 		 * descriptors for the same frame has to be set before, to
 		 * avoid race condition.
@@ -372,7 +377,7 @@ static void dwmac4_rd_prepare_tso_tx_desc(struct dma_desc *p, int is_fs,
 	if (tx_own)
 		tdes3 |= TDES3_OWN;
 
-	if (is_fs & tx_own)
+	if (is_fs && tx_own)
 		/* When the own bit, for the first frame, has to be set, all
 		 * descriptors for the same frame has to be set before, to
 		 * avoid race condition.
@@ -401,7 +406,7 @@ static void dwmac4_display_ring(void *head, unsigned int size, bool rx)
 	pr_info("%s descriptor ring:\n", rx ? "RX" : "TX");
 
 	for (i = 0; i < size; i++) {
-		pr_info("%d [0x%x]: 0x%x 0x%x 0x%x 0x%x\n",
+		pr_info("%03d [0x%x]: 0x%x 0x%x 0x%x 0x%x\n",
 			i, (unsigned int)virt_to_phys(p),
 			le32_to_cpu(p->des0), le32_to_cpu(p->des1),
 			le32_to_cpu(p->des2), le32_to_cpu(p->des3));

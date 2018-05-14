@@ -1,10 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Greybus Camera protocol driver.
  *
  * Copyright 2015 Google Inc.
  * Copyright 2015 Linaro Ltd.
- *
- * Released under the GPLv2 only.
  */
 
 #include <linux/debugfs.h>
@@ -919,7 +918,7 @@ static ssize_t gb_camera_debugfs_configure_streams(struct gb_camera *gcam,
 
 	/* Retrieve number of streams to configure */
 	token = strsep(&buf, ";");
-	if (token == NULL)
+	if (!token)
 		return -EINVAL;
 
 	ret = kstrtouint(token, 10, &nstreams);
@@ -930,7 +929,7 @@ static ssize_t gb_camera_debugfs_configure_streams(struct gb_camera *gcam,
 		return -EINVAL;
 
 	token = strsep(&buf, ";");
-	if (token == NULL)
+	if (!token)
 		return -EINVAL;
 
 	ret = kstrtouint(token, 10, &flags);
@@ -947,7 +946,7 @@ static ssize_t gb_camera_debugfs_configure_streams(struct gb_camera *gcam,
 
 		/* width */
 		token = strsep(&buf, ";");
-		if (token == NULL) {
+		if (!token) {
 			ret = -EINVAL;
 			goto done;
 		}
@@ -957,7 +956,7 @@ static ssize_t gb_camera_debugfs_configure_streams(struct gb_camera *gcam,
 
 		/* height */
 		token = strsep(&buf, ";");
-		if (token == NULL)
+		if (!token)
 			goto done;
 
 		ret = kstrtouint(token, 10, &stream->height);
@@ -966,7 +965,7 @@ static ssize_t gb_camera_debugfs_configure_streams(struct gb_camera *gcam,
 
 		/* Image format code */
 		token = strsep(&buf, ";");
-		if (token == NULL)
+		if (!token)
 			goto done;
 
 		ret = kstrtouint(token, 16, &stream->format);
@@ -1010,7 +1009,7 @@ static ssize_t gb_camera_debugfs_capture(struct gb_camera *gcam,
 
 	/* Request id */
 	token = strsep(&buf, ";");
-	if (token == NULL)
+	if (!token)
 		return -EINVAL;
 	ret = kstrtouint(token, 10, &request_id);
 	if (ret < 0)
@@ -1018,7 +1017,7 @@ static ssize_t gb_camera_debugfs_capture(struct gb_camera *gcam,
 
 	/* Stream mask */
 	token = strsep(&buf, ";");
-	if (token == NULL)
+	if (!token)
 		return -EINVAL;
 	ret = kstrtouint(token, 16, &streams_mask);
 	if (ret < 0)
@@ -1026,7 +1025,7 @@ static ssize_t gb_camera_debugfs_capture(struct gb_camera *gcam,
 
 	/* number of frames */
 	token = strsep(&buf, ";");
-	if (token == NULL)
+	if (!token)
 		return -EINVAL;
 	ret = kstrtouint(token, 10, &num_frames);
 	if (ret < 0)
@@ -1067,22 +1066,22 @@ struct gb_camera_debugfs_entry {
 static const struct gb_camera_debugfs_entry gb_camera_debugfs_entries[] = {
 	{
 		.name = "capabilities",
-		.mask = S_IFREG | S_IRUGO,
+		.mask = S_IFREG | 0444,
 		.buffer = GB_CAMERA_DEBUGFS_BUFFER_CAPABILITIES,
 		.execute = gb_camera_debugfs_capabilities,
 	}, {
 		.name = "configure_streams",
-		.mask = S_IFREG | S_IRUGO | S_IWUGO,
+		.mask = S_IFREG | 0666,
 		.buffer = GB_CAMERA_DEBUGFS_BUFFER_STREAMS,
 		.execute = gb_camera_debugfs_configure_streams,
 	}, {
 		.name = "capture",
-		.mask = S_IFREG | S_IRUGO | S_IWUGO,
+		.mask = S_IFREG | 0666,
 		.buffer = GB_CAMERA_DEBUGFS_BUFFER_CAPTURE,
 		.execute = gb_camera_debugfs_capture,
 	}, {
 		.name = "flush",
-		.mask = S_IFREG | S_IRUGO | S_IWUGO,
+		.mask = S_IFREG | 0666,
 		.buffer = GB_CAMERA_DEBUGFS_BUFFER_FLUSH,
 		.execute = gb_camera_debugfs_flush,
 	},
@@ -1097,7 +1096,7 @@ static ssize_t gb_camera_debugfs_read(struct file *file, char __user *buf,
 	ssize_t ret;
 
 	/* For read-only entries the operation is triggered by a read. */
-	if (!(op->mask & S_IWUGO)) {
+	if (!(op->mask & 0222)) {
 		ret = op->execute(gcam, NULL, 0);
 		if (ret < 0)
 			return ret;

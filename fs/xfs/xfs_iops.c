@@ -160,7 +160,6 @@ xfs_generic_create(
 	if (S_ISCHR(mode) || S_ISBLK(mode)) {
 		if (unlikely(!sysv_valid_dev(rdev) || MAJOR(rdev) & ~0x1ff))
 			return -EINVAL;
-		rdev = sysv_encode_dev(rdev);
 	} else {
 		rdev = 0;
 	}
@@ -190,12 +189,12 @@ xfs_generic_create(
 
 #ifdef CONFIG_XFS_POSIX_ACL
 	if (default_acl) {
-		error = xfs_set_acl(inode, default_acl, ACL_TYPE_DEFAULT);
+		error = __xfs_set_acl(inode, default_acl, ACL_TYPE_DEFAULT);
 		if (error)
 			goto out_cleanup_inode;
 	}
 	if (acl) {
-		error = xfs_set_acl(inode, acl, ACL_TYPE_ACCESS);
+		error = __xfs_set_acl(inode, acl, ACL_TYPE_ACCESS);
 		if (error)
 			goto out_cleanup_inode;
 	}
@@ -460,7 +459,7 @@ xfs_vn_get_link(
 	if (!dentry)
 		return ERR_PTR(-ECHILD);
 
-	link = kmalloc(MAXPATHLEN+1, GFP_KERNEL);
+	link = kmalloc(XFS_SYMLINK_MAXLEN+1, GFP_KERNEL);
 	if (!link)
 		goto out_err;
 
@@ -489,11 +488,12 @@ xfs_vn_get_link_inline(
 
 STATIC int
 xfs_vn_getattr(
-	struct vfsmount		*mnt,
-	struct dentry		*dentry,
-	struct kstat		*stat)
+	const struct path	*path,
+	struct kstat		*stat,
+	u32			request_mask,
+	unsigned int		query_flags)
 {
-	struct inode		*inode = d_inode(dentry);
+	struct inode		*inode = d_inode(path->dentry);
 	struct xfs_inode	*ip = XFS_I(inode);
 	struct xfs_mount	*mp = ip->i_mount;
 
@@ -515,13 +515,26 @@ xfs_vn_getattr(
 	stat->blocks =
 		XFS_FSB_TO_BB(mp, ip->i_d.di_nblocks + ip->i_delayed_blks);
 
+	if (ip->i_d.di_version == 3) {
+		if (request_mask & STATX_BTIME) {
+			stat->result_mask |= STATX_BTIME;
+			stat->btime.tv_sec = ip->i_d.di_crtime.t_sec;
+			stat->btime.tv_nsec = ip->i_d.di_crtime.t_nsec;
+		}
+	}
+
+	if (ip->i_d.di_flags & XFS_DIFLAG_IMMUTABLE)
+		stat->attributes |= STATX_ATTR_IMMUTABLE;
+	if (ip->i_d.di_flags & XFS_DIFLAG_APPEND)
+		stat->attributes |= STATX_ATTR_APPEND;
+	if (ip->i_d.di_flags & XFS_DIFLAG_NODUMP)
+		stat->attributes |= STATX_ATTR_NODUMP;
 
 	switch (inode->i_mode & S_IFMT) {
 	case S_IFBLK:
 	case S_IFCHR:
 		stat->blksize = BLKDEV_IOSIZE;
-		stat->rdev = MKDEV(sysv_major(ip->i_df.if_u2.if_rdev) & 0x1ff,
-				   sysv_minor(ip->i_df.if_u2.if_rdev));
+		stat->rdev = inode->i_rdev;
 		break;
 	default:
 		if (XFS_IS_REALTIME_INODE(ip)) {
@@ -802,7 +815,7 @@ xfs_vn_setattr_nonsize(
  * Caution: The caller of this function is responsible for calling
  * setattr_prepare() or otherwise verifying the change is fine.
  */
-int
+STATIC int
 xfs_setattr_size(
 	struct xfs_inode	*ip,
 	struct iattr		*iattr)
@@ -871,22 +884,6 @@ xfs_setattr_size(
 		return error;
 
 	/*
-	 * We are going to log the inode size change in this transaction so
-	 * any previous writes that are beyond the on disk EOF and the new
-	 * EOF that have not been written out need to be written here.  If we
-	 * do not write the data out, we expose ourselves to the null files
-	 * problem. Note that this includes any block zeroing we did above;
-	 * otherwise those blocks may not be zeroed after a crash.
-	 */
-	if (did_zeroing ||
-	    (newsize > ip->i_d.di_size && oldsize != ip->i_d.di_size)) {
-		error = filemap_write_and_wait_range(VFS_I(ip)->i_mapping,
-						      ip->i_d.di_size, newsize);
-		if (error)
-			return error;
-	}
-
-	/*
 	 * We've already locked out new page faults, so now we can safely remove
 	 * pages from the page cache knowing they won't get refaulted until we
 	 * drop the XFS_MMAP_EXCL lock after the extent manipulations are
@@ -902,8 +899,28 @@ xfs_setattr_size(
 	 * user visible changes). There's not much we can do about this, except
 	 * to hope that the caller sees ENOMEM and retries the truncate
 	 * operation.
+	 *
+	 * And we update in-core i_size and truncate page cache beyond newsize
+	 * before writeback the [di_size, newsize] range, so we're guaranteed
+	 * not to write stale data past the new EOF on truncate down.
 	 */
 	truncate_setsize(inode, newsize);
+
+	/*
+	 * We are going to log the inode size change in this transaction so
+	 * any previous writes that are beyond the on disk EOF and the new
+	 * EOF that have not been written out need to be written here.  If we
+	 * do not write the data out, we expose ourselves to the null files
+	 * problem. Note that this includes any block zeroing we did above;
+	 * otherwise those blocks may not be zeroed after a crash.
+	 */
+	if (did_zeroing ||
+	    (newsize > ip->i_d.di_size && oldsize != ip->i_d.di_size)) {
+		error = filemap_write_and_wait_range(VFS_I(ip)->i_mapping,
+						ip->i_d.di_size, newsize - 1);
+		if (error)
+			return error;
+	}
 
 	error = xfs_trans_alloc(mp, &M_RES(mp)->tr_itruncate, 0, 0, 0, &tp);
 	if (error)
@@ -1215,18 +1232,6 @@ xfs_setup_inode(
 
 	inode->i_uid    = xfs_uid_to_kuid(ip->i_d.di_uid);
 	inode->i_gid    = xfs_gid_to_kgid(ip->i_d.di_gid);
-
-	switch (inode->i_mode & S_IFMT) {
-	case S_IFBLK:
-	case S_IFCHR:
-		inode->i_rdev =
-			MKDEV(sysv_major(ip->i_df.if_u2.if_rdev) & 0x1ff,
-			      sysv_minor(ip->i_df.if_u2.if_rdev));
-		break;
-	default:
-		inode->i_rdev = 0;
-		break;
-	}
 
 	i_size_write(inode, ip->i_d.di_size);
 	xfs_diflags_to_iflags(inode, ip);

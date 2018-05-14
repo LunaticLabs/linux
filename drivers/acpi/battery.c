@@ -67,8 +67,10 @@ MODULE_DESCRIPTION("ACPI Battery Driver");
 MODULE_LICENSE("GPL");
 
 static async_cookie_t async_cookie;
+static bool battery_driver_registered;
 static int battery_bix_broken_package;
 static int battery_notification_delay_ms;
+static int battery_full_discharging;
 static unsigned int cache_time = 1000;
 module_param(cache_time, uint, 0644);
 MODULE_PARM_DESC(cache_time, "cache time in milliseconds");
@@ -92,6 +94,11 @@ static const struct acpi_device_id battery_device_ids[] = {
 };
 
 MODULE_DEVICE_TABLE(acpi, battery_device_ids);
+
+/* Lists of PMIC ACPI HIDs with an (often better) native battery driver */
+static const char * const acpi_battery_blacklist[] = {
+	"INT33F4", /* X-Powers AXP288 PMIC */
+};
 
 enum {
 	ACPI_BATTERY_ALARM_PRESENT,
@@ -208,9 +215,12 @@ static int acpi_battery_get_property(struct power_supply *psy,
 		return -ENODEV;
 	switch (psp) {
 	case POWER_SUPPLY_PROP_STATUS:
-		if (battery->state & ACPI_BATTERY_STATE_DISCHARGING)
-			val->intval = POWER_SUPPLY_STATUS_DISCHARGING;
-		else if (battery->state & ACPI_BATTERY_STATE_CHARGING)
+		if (battery->state & ACPI_BATTERY_STATE_DISCHARGING) {
+			if (battery_full_discharging && battery->rate_now == 0)
+				val->intval = POWER_SUPPLY_STATUS_FULL;
+			else
+				val->intval = POWER_SUPPLY_STATUS_DISCHARGING;
+		} else if (battery->state & ACPI_BATTERY_STATE_CHARGING)
 			val->intval = POWER_SUPPLY_STATUS_CHARGING;
 		else if (acpi_battery_is_charged(battery))
 			val->intval = POWER_SUPPLY_STATUS_FULL;
@@ -614,7 +624,7 @@ static ssize_t acpi_battery_alarm_store(struct device *dev,
 	return count;
 }
 
-static struct device_attribute alarm_attr = {
+static const struct device_attribute alarm_attr = {
 	.attr = {.name = "alarm", .mode = 0644},
 	.show = acpi_battery_alarm_show,
 	.store = acpi_battery_alarm_store,
@@ -776,7 +786,7 @@ static int acpi_battery_update(struct acpi_battery *battery, bool resume)
 	if ((battery->state & ACPI_BATTERY_STATE_CRITICAL) ||
 	    (test_bit(ACPI_BATTERY_ALARM_PRESENT, &battery->flags) &&
             (battery->capacity_now <= battery->alarm)))
-		pm_wakeup_event(&battery->device->dev, 0);
+		acpi_pm_wakeup_event(&battery->device->dev);
 
 	return result;
 }
@@ -1160,6 +1170,12 @@ battery_notification_delay_quirk(const struct dmi_system_id *d)
 	return 0;
 }
 
+static int __init battery_full_discharging_quirk(const struct dmi_system_id *d)
+{
+	battery_full_discharging = 1;
+	return 0;
+}
+
 static const struct dmi_system_id bat_dmi_table[] __initconst = {
 	{
 		.callback = battery_bix_broken_package_quirk,
@@ -1175,6 +1191,38 @@ static const struct dmi_system_id bat_dmi_table[] __initconst = {
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "Acer"),
 			DMI_MATCH(DMI_PRODUCT_NAME, "Aspire V5-573G"),
+		},
+	},
+	{
+		.callback = battery_full_discharging_quirk,
+		.ident = "ASUS GL502VSK",
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "ASUSTeK COMPUTER INC."),
+			DMI_MATCH(DMI_PRODUCT_NAME, "GL502VSK"),
+		},
+	},
+	{
+		.callback = battery_full_discharging_quirk,
+		.ident = "ASUS UX305LA",
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "ASUSTeK COMPUTER INC."),
+			DMI_MATCH(DMI_PRODUCT_NAME, "UX305LA"),
+		},
+	},
+	{
+		.callback = battery_full_discharging_quirk,
+		.ident = "ASUS UX360UA",
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "ASUSTeK COMPUTER INC."),
+			DMI_MATCH(DMI_PRODUCT_NAME, "UX360UA"),
+		},
+	},
+	{
+		.callback = battery_full_discharging_quirk,
+		.ident = "ASUS UX410UAK",
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "ASUSTeK COMPUTER INC."),
+			DMI_MATCH(DMI_PRODUCT_NAME, "UX410UAK"),
 		},
 	},
 	{},
@@ -1231,13 +1279,11 @@ static int acpi_battery_add(struct acpi_device *device)
 
 #ifdef CONFIG_ACPI_PROCFS_POWER
 	result = acpi_battery_add_fs(device);
-#endif
 	if (result) {
-#ifdef CONFIG_ACPI_PROCFS_POWER
 		acpi_battery_remove_fs(device);
-#endif
 		goto fail;
 	}
+#endif
 
 	printk(KERN_INFO PREFIX "%s Slot [%s] (battery %s)\n",
 		ACPI_BATTERY_DEVICE_NAME, acpi_device_bid(device),
@@ -1315,7 +1361,16 @@ static struct acpi_driver acpi_battery_driver = {
 
 static void __init acpi_battery_init_async(void *unused, async_cookie_t cookie)
 {
+	unsigned int i;
 	int result;
+
+	for (i = 0; i < ARRAY_SIZE(acpi_battery_blacklist); i++)
+		if (acpi_dev_present(acpi_battery_blacklist[i], "1", -1)) {
+			pr_info(PREFIX ACPI_BATTERY_DEVICE_NAME
+				": found native %s PMIC, not loading\n",
+				acpi_battery_blacklist[i]);
+			return;
+		}
 
 	dmi_check_system(bat_dmi_table);
 
@@ -1329,6 +1384,7 @@ static void __init acpi_battery_init_async(void *unused, async_cookie_t cookie)
 	if (result < 0)
 		acpi_unlock_battery_dir(acpi_battery_dir);
 #endif
+	battery_driver_registered = (result == 0);
 }
 
 static int __init acpi_battery_init(void)
@@ -1343,9 +1399,11 @@ static int __init acpi_battery_init(void)
 static void __exit acpi_battery_exit(void)
 {
 	async_synchronize_cookie(async_cookie + 1);
-	acpi_bus_unregister_driver(&acpi_battery_driver);
+	if (battery_driver_registered)
+		acpi_bus_unregister_driver(&acpi_battery_driver);
 #ifdef CONFIG_ACPI_PROCFS_POWER
-	acpi_unlock_battery_dir(acpi_battery_dir);
+	if (acpi_battery_dir)
+		acpi_unlock_battery_dir(acpi_battery_dir);
 #endif
 }
 

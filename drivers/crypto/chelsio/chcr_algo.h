@@ -176,29 +176,30 @@
 		      KEY_CONTEXT_SALT_PRESENT_V(1) | \
 		      KEY_CONTEXT_CTX_LEN_V((ctx_len)))
 
-#define FILL_WR_OP_CCTX_SIZE(len, ctx_len) \
+#define FILL_WR_OP_CCTX_SIZE \
 		htonl( \
 			FW_CRYPTO_LOOKASIDE_WR_OPCODE_V( \
 			FW_CRYPTO_LOOKASIDE_WR) | \
 			FW_CRYPTO_LOOKASIDE_WR_COMPL_V(0) | \
-			FW_CRYPTO_LOOKASIDE_WR_IMM_LEN_V((len)) | \
-			FW_CRYPTO_LOOKASIDE_WR_CCTX_LOC_V(1) | \
-			FW_CRYPTO_LOOKASIDE_WR_CCTX_SIZE_V((ctx_len)))
+			FW_CRYPTO_LOOKASIDE_WR_IMM_LEN_V((0)) | \
+			FW_CRYPTO_LOOKASIDE_WR_CCTX_LOC_V(0) | \
+			FW_CRYPTO_LOOKASIDE_WR_CCTX_SIZE_V(0))
 
-#define FILL_WR_RX_Q_ID(cid, qid, wr_iv) \
+#define FILL_WR_RX_Q_ID(cid, qid, lcb, fid) \
 		htonl( \
 			FW_CRYPTO_LOOKASIDE_WR_RX_CHID_V((cid)) | \
 			FW_CRYPTO_LOOKASIDE_WR_RX_Q_ID_V((qid)) | \
-			FW_CRYPTO_LOOKASIDE_WR_LCB_V(0) | \
-			FW_CRYPTO_LOOKASIDE_WR_IV_V((wr_iv)))
+			FW_CRYPTO_LOOKASIDE_WR_LCB_V((lcb)) | \
+			FW_CRYPTO_LOOKASIDE_WR_IV_V((IV_NOP)) | \
+			FW_CRYPTO_LOOKASIDE_WR_FQIDX_V(fid))
 
-#define FILL_ULPTX_CMD_DEST(cid) \
+#define FILL_ULPTX_CMD_DEST(cid, qid) \
 	htonl(ULPTX_CMD_V(ULP_TX_PKT) | \
 	      ULP_TXPKT_DEST_V(0) | \
 	      ULP_TXPKT_DATAMODIFY_V(0) | \
 	      ULP_TXPKT_CHANNELID_V((cid)) | \
 	      ULP_TXPKT_RO_V(1) | \
-	      ULP_TXPKT_FID_V(0))
+	      ULP_TXPKT_FID_V(qid))
 
 #define KEYCTX_ALIGN_PAD(bs) ({unsigned int _bs = (bs);\
 			      _bs == SHA1_DIGEST_SIZE ? 12 : 0; })
@@ -213,10 +214,17 @@
 					   calc_tx_flits_ofld(skb) * 8), 16)))
 
 #define FILL_CMD_MORE(immdatalen) htonl(ULPTX_CMD_V(ULP_TX_SC_IMM) |\
-					ULP_TX_SC_MORE_V((immdatalen) ? 0 : 1))
-
+					ULP_TX_SC_MORE_V((immdatalen)))
 #define MAX_NK 8
-#define CRYPTO_MAX_IMM_TX_PKT_LEN 256
+#define ROUND_16(bytes)		((bytes) & 0xFFFFFFF0)
+#define MAX_DSGL_ENT			32
+#define MIN_CIPHER_SG			1 /* IV */
+#define MIN_AUTH_SG			1 /* IV */
+#define MIN_GCM_SG			1 /* IV */
+#define MIN_DIGEST_SG			1 /*Partial Buffer*/
+#define MIN_CCM_SG			2 /*IV+B0*/
+#define SPACE_LEFT(len) \
+	((SGE_MAX_WR_LEN - WR_MIN_LEN - (len)))
 
 struct algo_param {
 	unsigned int auth_mode;
@@ -234,6 +242,12 @@ struct hash_wr_param {
 	u64 scmd1;
 };
 
+struct cipher_wr_param {
+	struct ablkcipher_request *req;
+	char *iv;
+	int bytes;
+	unsigned short qid;
+};
 enum {
 	AES_KEYLENGTH_128BIT = 128,
 	AES_KEYLENGTH_192BIT = 192,
@@ -269,32 +283,11 @@ enum {
 	ICV_16 = 16
 };
 
-struct hash_op_params {
-	unsigned char mk_size;
-	unsigned char pad_align;
-	unsigned char auth_mode;
-	char hash_name[MAX_HASH_NAME];
-	unsigned short block_size;
-	unsigned short word_size;
-	unsigned short ipad_size;
-};
-
 struct phys_sge_pairs {
 	__be16 len[8];
 	__be64 addr[8];
 };
 
-struct phys_sge_parm {
-	unsigned int nents;
-	unsigned int obsize;
-	unsigned short qid;
-	unsigned char align;
-};
-
-struct crypto_result {
-	struct completion completion;
-	int err;
-};
 
 static const u32 sha1_init[SHA1_DIGEST_SIZE / 4] = {
 		SHA1_H0, SHA1_H1, SHA1_H2, SHA1_H3, SHA1_H4,
@@ -401,11 +394,5 @@ static inline u32 aes_ks_subword(const u32 w)
 	bytes[3] = aes_sbox[bytes[3]];
 	return *(u32 *)(&bytes[0]);
 }
-
-static u32 round_constant[11] = {
-	0x01000000, 0x02000000, 0x04000000, 0x08000000,
-	0x10000000, 0x20000000, 0x40000000, 0x80000000,
-	0x1B000000, 0x36000000, 0x6C000000
-};
 
 #endif /* __CHCR_ALGO_H__ */

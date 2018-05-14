@@ -1,16 +1,11 @@
- /*
- * Copyright (c) 2010-2011 Samsung Electronics Co., Ltd.
- *		http://www.samsung.com
- *
- * Cloned from linux/arch/arm/mach-vexpress/platsmp.c
- *
- *  Copyright (C) 2002 ARM Ltd.
- *  All Rights Reserved
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
-*/
+// SPDX-License-Identifier: GPL-2.0
+// Copyright (c) 2010-2011 Samsung Electronics Co., Ltd.
+//		http://www.samsung.com
+//
+// Cloned from linux/arch/arm/mach-vexpress/platsmp.c
+//
+//  Copyright (C) 2002 ARM Ltd.
+//  All Rights Reserved
 
 #include <linux/init.h>
 #include <linux/errno.h>
@@ -353,7 +348,7 @@ static int exynos_boot_secondary(unsigned int cpu, struct task_struct *idle)
 
 		smp_rmb();
 
-		boot_addr = virt_to_phys(exynos4_secondary_startup);
+		boot_addr = __pa_symbol(exynos4_secondary_startup);
 
 		ret = exynos_set_boot_addr(core_id, boot_addr);
 		if (ret)
@@ -413,7 +408,7 @@ static void __init exynos_smp_prepare_cpus(unsigned int max_cpus)
 
 		mpidr = cpu_logical_map(i);
 		core_id = MPIDR_AFFINITY_LEVEL(mpidr, 0);
-		boot_addr = virt_to_phys(exynos4_secondary_startup);
+		boot_addr = __pa_symbol(exynos4_secondary_startup);
 
 		ret = exynos_set_boot_addr(core_id, boot_addr);
 		if (ret)

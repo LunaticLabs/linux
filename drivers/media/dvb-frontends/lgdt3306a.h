@@ -20,7 +20,7 @@
 
 #include <linux/i2c.h>
 #include <linux/i2c-mux.h>
-#include "dvb_frontend.h"
+#include <media/dvb_frontend.h>
 
 #define LG3306_TUNERI2C_ON  0x00
 #define LG3306_TUNERI2C_OFF 0x80

@@ -1295,7 +1295,7 @@ static int emac_poll(struct napi_struct *napi, int budget)
 					&emac_rxhost_errcodes[cause][0], ch);
 		}
 	} else if (num_rx_pkts < budget) {
-		napi_complete(napi);
+		napi_complete_done(napi, num_rx_pkts);
 		emac_int_enable(priv);
 	}
 
@@ -1383,11 +1383,6 @@ static int emac_devioctl(struct net_device *ndev, struct ifreq *ifrq, int cmd)
 		return phy_mii_ioctl(ndev->phydev, ifrq, cmd);
 	else
 		return -EOPNOTSUPP;
-}
-
-static int match_first_device(struct device *dev, void *data)
-{
-	return !strncmp(dev_name(dev), "davinci_mdio", 12);
 }
 
 /**
@@ -1480,8 +1475,8 @@ static int emac_dev_open(struct net_device *ndev)
 		phydev = of_phy_connect(ndev, priv->phy_node,
 					&emac_adjust_link, 0, 0);
 		if (!phydev) {
-			dev_err(emac_dev, "could not connect to phy %s\n",
-				priv->phy_node->full_name);
+			dev_err(emac_dev, "could not connect to phy %pOF\n",
+				priv->phy_node);
 			ret = -ENODEV;
 			goto err;
 		}
@@ -1489,8 +1484,8 @@ static int emac_dev_open(struct net_device *ndev)
 
 	/* use the first phy on the bus if pdata did not give us a phy id */
 	if (!phydev && !priv->phy_id) {
-		phy = bus_find_device(&mdio_bus_type, NULL, NULL,
-				      match_first_device);
+		phy = bus_find_device_by_name(&mdio_bus_type, NULL,
+					      "davinci_mdio");
 		if (phy) {
 			priv->phy_id = dev_name(phy);
 			if (!priv->phy_id || !*priv->phy_id)
@@ -1875,10 +1870,17 @@ static int davinci_emac_probe(struct platform_device *pdev)
 
 	priv->txchan = cpdma_chan_create(priv->dma, EMAC_DEF_TX_CH,
 					 emac_tx_handler, 0);
+	if (IS_ERR(priv->txchan)) {
+		dev_err(&pdev->dev, "error initializing tx dma channel\n");
+		rc = PTR_ERR(priv->txchan);
+		goto no_cpdma_chan;
+	}
+
 	priv->rxchan = cpdma_chan_create(priv->dma, EMAC_DEF_RX_CH,
 					 emac_rx_handler, 1);
-	if (WARN_ON(!priv->txchan || !priv->rxchan)) {
-		rc = -ENOMEM;
+	if (IS_ERR(priv->rxchan)) {
+		dev_err(&pdev->dev, "error initializing rx dma channel\n");
+		rc = PTR_ERR(priv->rxchan);
 		goto no_cpdma_chan;
 	}
 

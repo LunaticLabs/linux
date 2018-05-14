@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * GPL HEADER START
  *
@@ -39,7 +40,7 @@
 
 #include "selftest.h"
 
-lst_sid_t LST_INVALID_SID = {LNET_NID_ANY, -1};
+struct lst_sid LST_INVALID_SID = {LNET_NID_ANY, -1};
 
 static int session_timeout = 100;
 module_param(session_timeout, int, 0444);
@@ -142,7 +143,7 @@ sfw_register_test(struct srpc_service *service,
 		return -EEXIST;
 	}
 
-	LIBCFS_ALLOC(tsc, sizeof(struct sfw_test_case));
+	tsc = kzalloc(sizeof(struct sfw_test_case), GFP_NOFS);
 	if (!tsc)
 		return -ENOMEM;
 
@@ -254,7 +255,7 @@ sfw_session_expired(void *data)
 }
 
 static inline void
-sfw_init_session(struct sfw_session *sn, lst_sid_t sid,
+sfw_init_session(struct sfw_session *sn, struct lst_sid sid,
 		 unsigned int features, const char *name)
 {
 	struct stt_timer *timer = &sn->sn_timer;
@@ -316,7 +317,7 @@ sfw_client_rpc_fini(struct srpc_client_rpc *rpc)
 }
 
 static struct sfw_batch *
-sfw_find_batch(lst_bid_t bid)
+sfw_find_batch(struct lst_bid bid)
 {
 	struct sfw_session *sn = sfw_data.fw_session;
 	struct sfw_batch *bat;
@@ -332,7 +333,7 @@ sfw_find_batch(lst_bid_t bid)
 }
 
 static struct sfw_batch *
-sfw_bid2batch(lst_bid_t bid)
+sfw_bid2batch(struct lst_bid bid)
 {
 	struct sfw_session *sn = sfw_data.fw_session;
 	struct sfw_batch *bat;
@@ -343,7 +344,7 @@ sfw_bid2batch(lst_bid_t bid)
 	if (bat)
 		return bat;
 
-	LIBCFS_ALLOC(bat, sizeof(struct sfw_batch));
+	bat = kzalloc(sizeof(struct sfw_batch), GFP_NOFS);
 	if (!bat)
 		return NULL;
 
@@ -361,7 +362,7 @@ static int
 sfw_get_stats(struct srpc_stat_reqst *request, struct srpc_stat_reply *reply)
 {
 	struct sfw_session *sn = sfw_data.fw_session;
-	sfw_counters_t *cnt = &reply->str_fw;
+	struct sfw_counters *cnt = &reply->str_fw;
 	struct sfw_batch *bat;
 
 	reply->str_sid = !sn ? LST_INVALID_SID : sn->sn_id;
@@ -446,7 +447,7 @@ sfw_make_session(struct srpc_mksn_reqst *request, struct srpc_mksn_reply *reply)
 	}
 
 	/* brand new or create by force */
-	LIBCFS_ALLOC(sn, sizeof(struct sfw_session));
+	sn = kzalloc(sizeof(struct sfw_session), GFP_NOFS);
 	if (!sn) {
 		CERROR("dropping RPC mksn under memory pressure\n");
 		return -ENOMEM;
@@ -631,19 +632,19 @@ sfw_destroy_test_instance(struct sfw_test_instance *tsi)
 		tsu = list_entry(tsi->tsi_units.next,
 				 struct sfw_test_unit, tsu_list);
 		list_del(&tsu->tsu_list);
-		LIBCFS_FREE(tsu, sizeof(*tsu));
+		kfree(tsu);
 	}
 
 	while (!list_empty(&tsi->tsi_free_rpcs)) {
 		rpc = list_entry(tsi->tsi_free_rpcs.next,
 				 struct srpc_client_rpc, crpc_list);
 		list_del(&rpc->crpc_list);
-		LIBCFS_FREE(rpc, srpc_client_rpc_size(rpc));
+		kfree(rpc);
 	}
 
 clean:
 	sfw_unload_test(tsi);
-	LIBCFS_FREE(tsi, sizeof(*tsi));
+	kfree(tsi);
 }
 
 static void
@@ -661,7 +662,7 @@ sfw_destroy_batch(struct sfw_batch *tsb)
 		sfw_destroy_test_instance(tsi);
 	}
 
-	LIBCFS_FREE(tsb, sizeof(struct sfw_batch));
+	kfree(tsb);
 }
 
 void
@@ -679,7 +680,7 @@ sfw_destroy_session(struct sfw_session *sn)
 		sfw_destroy_batch(batch);
 	}
 
-	LIBCFS_FREE(sn, sizeof(*sn));
+	kfree(sn);
 	atomic_dec(&sfw_data.fw_nzombies);
 }
 
@@ -739,7 +740,7 @@ sfw_add_test_instance(struct sfw_batch *tsb, struct srpc_server_rpc *rpc)
 	int i;
 	int rc;
 
-	LIBCFS_ALLOC(tsi, sizeof(*tsi));
+	tsi = kzalloc(sizeof(*tsi), GFP_NOFS);
 	if (!tsi) {
 		CERROR("Can't allocate test instance for batch: %llu\n",
 		       tsb->bat_id.bat_id);
@@ -762,7 +763,7 @@ sfw_add_test_instance(struct sfw_batch *tsb, struct srpc_server_rpc *rpc)
 
 	rc = sfw_load_test(tsi);
 	if (rc) {
-		LIBCFS_FREE(tsi, sizeof(*tsi));
+		kfree(tsi);
 		return rc;
 	}
 
@@ -777,14 +778,14 @@ sfw_add_test_instance(struct sfw_batch *tsb, struct srpc_server_rpc *rpc)
 	LASSERT(bk);
 	LASSERT(bk->bk_niov * SFW_ID_PER_PAGE >= (unsigned int)ndest);
 	LASSERT((unsigned int)bk->bk_len >=
-		sizeof(lnet_process_id_packed_t) * ndest);
+		sizeof(struct lnet_process_id_packed) * ndest);
 
 	sfw_unpack_addtest_req(msg);
 	memcpy(&tsi->tsi_u, &req->tsr_u, sizeof(tsi->tsi_u));
 
 	for (i = 0; i < ndest; i++) {
-		lnet_process_id_packed_t *dests;
-		lnet_process_id_packed_t id;
+		struct lnet_process_id_packed *dests;
+		struct lnet_process_id_packed id;
 		int j;
 
 		dests = page_address(bk->bk_iovs[i / SFW_ID_PER_PAGE].bv_page);
@@ -794,7 +795,7 @@ sfw_add_test_instance(struct sfw_batch *tsb, struct srpc_server_rpc *rpc)
 			sfw_unpack_id(id);
 
 		for (j = 0; j < tsi->tsi_concur; j++) {
-			LIBCFS_ALLOC(tsu, sizeof(struct sfw_test_unit));
+			tsu = kzalloc(sizeof(struct sfw_test_unit), GFP_NOFS);
 			if (!tsu) {
 				rc = -ENOMEM;
 				CERROR("Can't allocate tsu for %d\n",
@@ -899,7 +900,7 @@ sfw_test_rpc_done(struct srpc_client_rpc *rpc)
 }
 
 int
-sfw_create_test_rpc(struct sfw_test_unit *tsu, lnet_process_id_t peer,
+sfw_create_test_rpc(struct sfw_test_unit *tsu, struct lnet_process_id peer,
 		    unsigned int features, int nblk, int blklen,
 		    struct srpc_client_rpc **rpcpp)
 {
@@ -940,14 +941,12 @@ sfw_create_test_rpc(struct sfw_test_unit *tsu, lnet_process_id_t peer,
 	return 0;
 }
 
-static int
+static void
 sfw_run_test(struct swi_workitem *wi)
 {
-	struct sfw_test_unit *tsu = wi->swi_workitem.wi_data;
+	struct sfw_test_unit *tsu = container_of(wi, struct sfw_test_unit, tsu_worker);
 	struct sfw_test_instance *tsi = tsu->tsu_instance;
 	struct srpc_client_rpc *rpc = NULL;
-
-	LASSERT(wi == &tsu->tsu_worker);
 
 	if (tsi->tsi_ops->tso_prep_rpc(tsu, tsu->tsu_dest, &rpc)) {
 		LASSERT(!rpc);
@@ -974,7 +973,7 @@ sfw_run_test(struct swi_workitem *wi)
 	rpc->crpc_timeout = rpc_timeout;
 	srpc_post_rpc(rpc);
 	spin_unlock(&rpc->crpc_lock);
-	return 0;
+	return;
 
 test_done:
 	/*
@@ -984,9 +983,7 @@ test_done:
 	 * - my batch is still active; no one can run it again now.
 	 * Cancel pending schedules and prevent future schedule attempts:
 	 */
-	swi_exit_workitem(wi);
 	sfw_test_unit_done(tsu);
-	return 1;
 }
 
 static int
@@ -1015,8 +1012,8 @@ sfw_run_batch(struct sfw_batch *tsb)
 			atomic_inc(&tsi->tsi_nactive);
 			tsu->tsu_loop = tsi->tsi_loop;
 			wi = &tsu->tsu_worker;
-			swi_init_workitem(wi, tsu, sfw_run_test,
-					  lst_sched_test[lnet_cpt_of_nid(tsu->tsu_dest.nid)]);
+			swi_init_workitem(wi, sfw_run_test,
+					  lst_test_wq[lnet_cpt_of_nid(tsu->tsu_dest.nid)]);
 			swi_schedule_workitem(wi);
 		}
 	}
@@ -1164,7 +1161,7 @@ sfw_add_test(struct srpc_server_rpc *rpc)
 			len = npg * PAGE_SIZE;
 
 		} else {
-			len = sizeof(lnet_process_id_packed_t) *
+			len = sizeof(struct lnet_process_id_packed) *
 			      request->tsr_ndest;
 		}
 
@@ -1379,7 +1376,7 @@ sfw_bulk_ready(struct srpc_server_rpc *rpc, int status)
 }
 
 struct srpc_client_rpc *
-sfw_create_rpc(lnet_process_id_t peer, int service,
+sfw_create_rpc(struct lnet_process_id peer, int service,
 	       unsigned int features, int nbulkiov, int bulklen,
 	       void (*done)(struct srpc_client_rpc *), void *priv)
 {
@@ -1766,7 +1763,7 @@ sfw_shutdown(void)
 				 struct srpc_client_rpc, crpc_list);
 		list_del(&rpc->crpc_list);
 
-		LIBCFS_FREE(rpc, srpc_client_rpc_size(rpc));
+		kfree(rpc);
 	}
 
 	for (i = 0; ; i++) {
@@ -1784,6 +1781,6 @@ sfw_shutdown(void)
 		srpc_wait_service_shutdown(tsc->tsc_srv_service);
 
 		list_del(&tsc->tsc_list);
-		LIBCFS_FREE(tsc, sizeof(*tsc));
+		kfree(tsc);
 	}
 }

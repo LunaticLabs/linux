@@ -386,6 +386,16 @@ enum ieee80211_sta_rx_bandwidth ieee80211_sta_cur_vht_bw(struct sta_info *sta)
 
 	bw = ieee80211_sta_cap_rx_bw(sta);
 	bw = min(bw, sta->cur_max_bandwidth);
+
+	/* Don't consider AP's bandwidth for TDLS peers, section 11.23.1 of
+	 * IEEE80211-2016 specification makes higher bandwidth operation
+	 * possible on the TDLS link if the peers have wider bandwidth
+	 * capability.
+	 */
+	if (test_sta_flag(sta, WLAN_STA_TDLS_PEER) &&
+	    test_sta_flag(sta, WLAN_STA_TDLS_WIDER_BW))
+		return bw;
+
 	bw = min(bw, ieee80211_chan_width_to_rx_bw(bss_width));
 
 	return bw;
@@ -436,13 +446,9 @@ u32 __ieee80211_vht_handle_opmode(struct ieee80211_sub_if_data *sdata,
 				  struct sta_info *sta, u8 opmode,
 				  enum nl80211_band band)
 {
-	struct ieee80211_local *local = sdata->local;
-	struct ieee80211_supported_band *sband;
 	enum ieee80211_sta_rx_bandwidth new_bw;
 	u32 changed = 0;
 	u8 nss;
-
-	sband = local->hw.wiphy->bands[band];
 
 	/* ignore - no support for BF yet */
 	if (opmode & IEEE80211_OPMODE_NOTIF_RX_NSS_TYPE_BF)

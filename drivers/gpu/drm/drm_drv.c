@@ -57,60 +57,23 @@ MODULE_PARM_DESC(debug, "Enable debug output, where each bit enables a debug cat
 "\t\tBit 2 (0x04) will enable KMS messages (modesetting code)\n"
 "\t\tBit 3 (0x08) will enable PRIME messages (prime code)\n"
 "\t\tBit 4 (0x10) will enable ATOMIC messages (atomic code)\n"
-"\t\tBit 5 (0x20) will enable VBL messages (vblank code)");
+"\t\tBit 5 (0x20) will enable VBL messages (vblank code)\n"
+"\t\tBit 7 (0x80) will enable LEASE messages (leasing code)");
 module_param_named(debug, drm_debug, int, 0600);
 
 static DEFINE_SPINLOCK(drm_minor_lock);
 static struct idr drm_minors_idr;
 
+/*
+ * If the drm core fails to init for whatever reason,
+ * we should prevent any drivers from registering with it.
+ * It's best to check this at drm_dev_init(), as some drivers
+ * prefer to embed struct drm_device into their own device
+ * structure and call drm_dev_init() themselves.
+ */
+static bool drm_core_init_complete = false;
+
 static struct dentry *drm_debugfs_root;
-
-#define DRM_PRINTK_FMT "[" DRM_NAME ":%s]%s %pV"
-
-void drm_dev_printk(const struct device *dev, const char *level,
-		    unsigned int category, const char *function_name,
-		    const char *prefix, const char *format, ...)
-{
-	struct va_format vaf;
-	va_list args;
-
-	if (category != DRM_UT_NONE && !(drm_debug & category))
-		return;
-
-	va_start(args, format);
-	vaf.fmt = format;
-	vaf.va = &args;
-
-	if (dev)
-		dev_printk(level, dev, DRM_PRINTK_FMT, function_name, prefix,
-			   &vaf);
-	else
-		printk("%s" DRM_PRINTK_FMT, level, function_name, prefix, &vaf);
-
-	va_end(args);
-}
-EXPORT_SYMBOL(drm_dev_printk);
-
-void drm_printk(const char *level, unsigned int category,
-		const char *format, ...)
-{
-	struct va_format vaf;
-	va_list args;
-
-	if (category != DRM_UT_NONE && !(drm_debug & category))
-		return;
-
-	va_start(args, format);
-	vaf.fmt = format;
-	vaf.va = &args;
-
-	printk("%s" "[" DRM_NAME ":%ps]%s %pV",
-	       level, __builtin_return_address(0),
-	       strcmp(level, KERN_ERR) == 0 ? " *ERROR*" : "", &vaf);
-
-	va_end(args);
-}
-EXPORT_SYMBOL(drm_printk);
 
 /*
  * DRM Minors
@@ -221,7 +184,7 @@ static int drm_minor_register(struct drm_device *dev, unsigned int type)
 	ret = drm_debugfs_init(minor, minor->index, drm_debugfs_root);
 	if (ret) {
 		DRM_ERROR("DRM: Failed to initialize /sys/kernel/debug/dri.\n");
-		return ret;
+		goto err_debugfs;
 	}
 
 	ret = device_add(minor->kdev);
@@ -277,13 +240,13 @@ struct drm_minor *drm_minor_acquire(unsigned int minor_id)
 	spin_lock_irqsave(&drm_minor_lock, flags);
 	minor = idr_find(&drm_minors_idr, minor_id);
 	if (minor)
-		drm_dev_ref(minor->dev);
+		drm_dev_get(minor->dev);
 	spin_unlock_irqrestore(&drm_minor_lock, flags);
 
 	if (!minor) {
 		return ERR_PTR(-ENODEV);
-	} else if (drm_device_is_unplugged(minor->dev)) {
-		drm_dev_unref(minor->dev);
+	} else if (drm_dev_is_unplugged(minor->dev)) {
+		drm_dev_put(minor->dev);
 		return ERR_PTR(-ENODEV);
 	}
 
@@ -292,13 +255,13 @@ struct drm_minor *drm_minor_acquire(unsigned int minor_id)
 
 void drm_minor_release(struct drm_minor *minor)
 {
-	drm_dev_unref(minor->dev);
+	drm_dev_put(minor->dev);
 }
 
 /**
  * DOC: driver instance overview
  *
- * A device instance for a drm driver is represented by struct &drm_device. This
+ * A device instance for a drm driver is represented by &struct drm_device. This
  * is allocated with drm_dev_alloc(), usually from bus-specific ->probe()
  * callbacks implemented by the driver. The driver then needs to initialize all
  * the various subsystems for the drm device like memory management, vblank
@@ -309,7 +272,7 @@ void drm_minor_release(struct drm_minor *minor)
  * userspace the device instance can be published using drm_dev_register().
  *
  * There is also deprecated support for initalizing device instances using
- * bus-specific helpers and the ->load() callback. But due to
+ * bus-specific helpers and the &drm_driver.load callback. But due to
  * backwards-compatibility needs the device instance have to be published too
  * early, which requires unpretty global locking to make safe and is therefore
  * only support for existing drivers not yet converted to the new scheme.
@@ -317,15 +280,14 @@ void drm_minor_release(struct drm_minor *minor)
  * When cleaning up a device instance everything needs to be done in reverse:
  * First unpublish the device instance with drm_dev_unregister(). Then clean up
  * any other resources allocated at device initialization and drop the driver's
- * reference to &drm_device using drm_dev_unref().
+ * reference to &drm_device using drm_dev_put().
  *
  * Note that the lifetime rules for &drm_device instance has still a lot of
  * historical baggage. Hence use the reference counting provided by
- * drm_dev_ref() and drm_dev_unref() only carefully.
+ * drm_dev_get() and drm_dev_put() only carefully.
  *
- * Also note that embedding of &drm_device is currently not (yet) supported (but
- * it would be easy to add). Drivers can store driver-private data in the
- * dev_priv field of &drm_device.
+ * It is recommended that drivers embed &struct drm_device into their own device
+ * structure, which is supported through drm_dev_init().
  */
 
 /**
@@ -337,7 +299,7 @@ void drm_minor_release(struct drm_minor *minor)
  * Cleans up all DRM device, calling drm_lastclose().
  *
  * Note: Use of this function is deprecated. It will eventually go away
- * completely.  Please use drm_dev_unregister() and drm_dev_unref() explicitly
+ * completely.  Please use drm_dev_unregister() and drm_dev_put() explicitly
  * instead to make sure that the device isn't userspace accessible any more
  * while teardown is in progress, ensuring that userspace can't access an
  * inconsistent state.
@@ -352,25 +314,36 @@ void drm_put_dev(struct drm_device *dev)
 	}
 
 	drm_dev_unregister(dev);
-	drm_dev_unref(dev);
+	drm_dev_put(dev);
 }
 EXPORT_SYMBOL(drm_put_dev);
 
-void drm_unplug_dev(struct drm_device *dev)
+static void drm_device_set_unplugged(struct drm_device *dev)
 {
-	/* for a USB device */
+	smp_wmb();
+	atomic_set(&dev->unplugged, 1);
+}
+
+/**
+ * drm_dev_unplug - unplug a DRM device
+ * @dev: DRM device
+ *
+ * This unplugs a hotpluggable DRM device, which makes it inaccessible to
+ * userspace operations. Entry-points can use drm_dev_is_unplugged(). This
+ * essentially unregisters the device like drm_dev_unregister(), but can be
+ * called while there are still open users of @dev.
+ */
+void drm_dev_unplug(struct drm_device *dev)
+{
 	drm_dev_unregister(dev);
 
 	mutex_lock(&drm_global_mutex);
-
 	drm_device_set_unplugged(dev);
-
-	if (dev->open_count == 0) {
-		drm_put_dev(dev);
-	}
+	if (dev->open_count == 0)
+		drm_dev_put(dev);
 	mutex_unlock(&drm_global_mutex);
 }
-EXPORT_SYMBOL(drm_unplug_dev);
+EXPORT_SYMBOL(drm_dev_unplug);
 
 /*
  * DRM internal mount
@@ -456,13 +429,20 @@ static void drm_fs_inode_free(struct inode *inode)
  * initialization sequence to make sure userspace can't access an inconsistent
  * state.
  *
- * The initial ref-count of the object is 1. Use drm_dev_ref() and
- * drm_dev_unref() to take and drop further ref-counts.
+ * The initial ref-count of the object is 1. Use drm_dev_get() and
+ * drm_dev_put() to take and drop further ref-counts.
  *
  * Note that for purely virtual devices @parent can be NULL.
  *
  * Drivers that do not want to allocate their own device struct
- * embedding struct &drm_device can call drm_dev_alloc() instead.
+ * embedding &struct drm_device can call drm_dev_alloc() instead. For drivers
+ * that do embed &struct drm_device it must be placed first in the overall
+ * structure, and the overall structure must be allocated using kmalloc(): The
+ * drm core's release function unconditionally calls kfree() on the @dev pointer
+ * when the final reference is released. To override this behaviour, and so
+ * allow embedding of the drm_device inside the driver's device struct at an
+ * arbitrary offset, you must supply a &drm_driver.release callback and control
+ * the finalization explicitly.
  *
  * RETURNS:
  * 0 on success, or error code on failure.
@@ -472,6 +452,11 @@ int drm_dev_init(struct drm_device *dev,
 		 struct device *parent)
 {
 	int ret;
+
+	if (!drm_core_init_complete) {
+		DRM_ERROR("DRM core is not initialized\n");
+		return -ENODEV;
+	}
 
 	kref_init(&dev->ref);
 	dev->dev = parent;
@@ -550,6 +535,41 @@ err_free:
 EXPORT_SYMBOL(drm_dev_init);
 
 /**
+ * drm_dev_fini - Finalize a dead DRM device
+ * @dev: DRM device
+ *
+ * Finalize a dead DRM device. This is the converse to drm_dev_init() and
+ * frees up all data allocated by it. All driver private data should be
+ * finalized first. Note that this function does not free the @dev, that is
+ * left to the caller.
+ *
+ * The ref-count of @dev must be zero, and drm_dev_fini() should only be called
+ * from a &drm_driver.release callback.
+ */
+void drm_dev_fini(struct drm_device *dev)
+{
+	drm_vblank_cleanup(dev);
+
+	if (drm_core_check_feature(dev, DRIVER_GEM))
+		drm_gem_destroy(dev);
+
+	drm_legacy_ctxbitmap_cleanup(dev);
+	drm_ht_remove(&dev->map_hash);
+	drm_fs_inode_free(dev->anon_inode);
+
+	drm_minor_free(dev, DRM_MINOR_PRIMARY);
+	drm_minor_free(dev, DRM_MINOR_RENDER);
+	drm_minor_free(dev, DRM_MINOR_CONTROL);
+
+	mutex_destroy(&dev->master_mutex);
+	mutex_destroy(&dev->ctxlist_mutex);
+	mutex_destroy(&dev->filelist_mutex);
+	mutex_destroy(&dev->struct_mutex);
+	kfree(dev->unique);
+}
+EXPORT_SYMBOL(drm_dev_fini);
+
+/**
  * drm_dev_alloc - Allocate new DRM device
  * @driver: DRM driver to allocate device for
  * @parent: Parent device object
@@ -560,12 +580,12 @@ EXPORT_SYMBOL(drm_dev_init);
  * initialization sequence to make sure userspace can't access an inconsistent
  * state.
  *
- * The initial ref-count of the object is 1. Use drm_dev_ref() and
- * drm_dev_unref() to take and drop further ref-counts.
+ * The initial ref-count of the object is 1. Use drm_dev_get() and
+ * drm_dev_put() to take and drop further ref-counts.
  *
  * Note that for purely virtual devices @parent can be NULL.
  *
- * Drivers that wish to subclass or embed struct &drm_device into their
+ * Drivers that wish to subclass or embed &struct drm_device into their
  * own struct should look at using drm_dev_init() instead.
  *
  * RETURNS:
@@ -595,55 +615,57 @@ static void drm_dev_release(struct kref *ref)
 {
 	struct drm_device *dev = container_of(ref, struct drm_device, ref);
 
-	if (drm_core_check_feature(dev, DRIVER_GEM))
-		drm_gem_destroy(dev);
-
-	drm_legacy_ctxbitmap_cleanup(dev);
-	drm_ht_remove(&dev->map_hash);
-	drm_fs_inode_free(dev->anon_inode);
-
-	drm_minor_free(dev, DRM_MINOR_PRIMARY);
-	drm_minor_free(dev, DRM_MINOR_RENDER);
-	drm_minor_free(dev, DRM_MINOR_CONTROL);
-
-	mutex_destroy(&dev->master_mutex);
-	mutex_destroy(&dev->ctxlist_mutex);
-	mutex_destroy(&dev->filelist_mutex);
-	mutex_destroy(&dev->struct_mutex);
-	kfree(dev->unique);
-	kfree(dev);
+	if (dev->driver->release) {
+		dev->driver->release(dev);
+	} else {
+		drm_dev_fini(dev);
+		kfree(dev);
+	}
 }
 
 /**
- * drm_dev_ref - Take reference of a DRM device
+ * drm_dev_get - Take reference of a DRM device
  * @dev: device to take reference of or NULL
  *
  * This increases the ref-count of @dev by one. You *must* already own a
- * reference when calling this. Use drm_dev_unref() to drop this reference
+ * reference when calling this. Use drm_dev_put() to drop this reference
  * again.
  *
  * This function never fails. However, this function does not provide *any*
  * guarantee whether the device is alive or running. It only provides a
  * reference to the object and the memory associated with it.
  */
-void drm_dev_ref(struct drm_device *dev)
+void drm_dev_get(struct drm_device *dev)
 {
 	if (dev)
 		kref_get(&dev->ref);
 }
-EXPORT_SYMBOL(drm_dev_ref);
+EXPORT_SYMBOL(drm_dev_get);
 
 /**
- * drm_dev_unref - Drop reference of a DRM device
+ * drm_dev_put - Drop reference of a DRM device
  * @dev: device to drop reference of or NULL
  *
  * This decreases the ref-count of @dev by one. The device is destroyed if the
  * ref-count drops to zero.
  */
-void drm_dev_unref(struct drm_device *dev)
+void drm_dev_put(struct drm_device *dev)
 {
 	if (dev)
 		kref_put(&dev->ref, drm_dev_release);
+}
+EXPORT_SYMBOL(drm_dev_put);
+
+/**
+ * drm_dev_unref - Drop reference of a DRM device
+ * @dev: device to drop reference of or NULL
+ *
+ * This is a compatibility alias for drm_dev_put() and should not be used by new
+ * code.
+ */
+void drm_dev_unref(struct drm_device *dev)
+{
+	drm_dev_put(dev);
 }
 EXPORT_SYMBOL(drm_dev_unref);
 
@@ -715,9 +737,9 @@ static void remove_compat_control_link(struct drm_device *dev)
  * Never call this twice on any device!
  *
  * NOTE: To ensure backward compatibility with existing drivers method this
- * function calls the ->load() method after registering the device nodes,
- * creating race conditions. Usage of the ->load() methods is therefore
- * deprecated, drivers must perform all initialization before calling
+ * function calls the &drm_driver.load method after registering the device
+ * nodes, creating race conditions. Usage of the &drm_driver.load methods is
+ * therefore deprecated, drivers must perform all initialization before calling
  * drm_dev_register().
  *
  * RETURNS:
@@ -725,6 +747,7 @@ static void remove_compat_control_link(struct drm_device *dev)
  */
 int drm_dev_register(struct drm_device *dev, unsigned long flags)
 {
+	struct drm_driver *driver = dev->driver;
 	int ret;
 
 	mutex_lock(&drm_global_mutex);
@@ -757,6 +780,13 @@ int drm_dev_register(struct drm_device *dev, unsigned long flags)
 		drm_modeset_register_all(dev);
 
 	ret = 0;
+
+	DRM_INFO("Initialized %s %d.%d.%d %s for %s on minor %d\n",
+		 driver->name, driver->major, driver->minor,
+		 driver->patchlevel, driver->date,
+		 dev->dev ? dev_name(dev->dev) : "virtual device",
+		 dev->primary->index);
+
 	goto out_unlock;
 
 err_minors:
@@ -776,7 +806,10 @@ EXPORT_SYMBOL(drm_dev_register);
  *
  * Unregister the DRM device from the system. This does the reverse of
  * drm_dev_register() but does not deallocate the device. The caller must call
- * drm_dev_unref() to drop their final reference.
+ * drm_dev_put() to drop their final reference.
+ *
+ * A special form of unregistering for hotpluggable devices is drm_dev_unplug(),
+ * which can be called while there are still open users of @dev.
  *
  * This should be called first in the device teardown code to make sure
  * userspace can't access the device instance any more.
@@ -785,7 +818,8 @@ void drm_dev_unregister(struct drm_device *dev)
 {
 	struct drm_map_list *r_list, *list_temp;
 
-	drm_lastclose(dev);
+	if (drm_core_check_feature(dev, DRIVER_LEGACY))
+		drm_lastclose(dev);
 
 	dev->registered = false;
 
@@ -797,8 +831,6 @@ void drm_dev_unregister(struct drm_device *dev)
 
 	if (dev->agp)
 		drm_pci_agp_destroy(dev);
-
-	drm_vblank_cleanup(dev);
 
 	list_for_each_entry_safe(r_list, list_temp, &dev->maplist, head)
 		drm_legacy_rmmap(dev, r_list->map);
@@ -925,7 +957,9 @@ static int __init drm_core_init(void)
 	if (ret < 0)
 		goto error;
 
-	DRM_INFO("Initialized\n");
+	drm_core_init_complete = true;
+
+	DRM_DEBUG("Initialized\n");
 	return 0;
 
 error:

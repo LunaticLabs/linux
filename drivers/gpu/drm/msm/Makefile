@@ -1,4 +1,5 @@
-ccflags-y := -Iinclude/drm -Idrivers/gpu/drm/msm
+# SPDX-License-Identifier: GPL-2.0
+ccflags-y := -Idrivers/gpu/drm/msm
 ccflags-$(CONFIG_DRM_MSM_DSI) += -Idrivers/gpu/drm/msm/dsi
 
 msm-y := \
@@ -8,6 +9,7 @@ msm-y := \
 	adreno/a4xx_gpu.o \
 	adreno/a5xx_gpu.o \
 	adreno/a5xx_power.o \
+	adreno/a5xx_preempt.o \
 	hdmi/hdmi.o \
 	hdmi/hdmi_audio.o \
 	hdmi/hdmi_bridge.o \
@@ -40,6 +42,7 @@ msm-y := \
 	mdp/mdp5/mdp5_mdss.o \
 	mdp/mdp5/mdp5_kms.o \
 	mdp/mdp5/mdp5_pipe.o \
+	mdp/mdp5/mdp5_mixer.o \
 	mdp/mdp5/mdp5_plane.o \
 	mdp/mdp5/mdp5_smp.o \
 	msm_atomic.o \
@@ -56,7 +59,8 @@ msm-y := \
 	msm_iommu.o \
 	msm_perf.o \
 	msm_rd.o \
-	msm_ringbuffer.o
+	msm_ringbuffer.o \
+	msm_submitqueue.o
 
 msm-$(CONFIG_DRM_FBDEV_EMULATION) += msm_fbdev.o
 msm-$(CONFIG_COMMON_CLK) += mdp/mdp4/mdp4_lvds_pll.o
@@ -76,11 +80,13 @@ msm-$(CONFIG_DRM_MSM_DSI) += dsi/dsi.o \
 msm-$(CONFIG_DRM_MSM_DSI_28NM_PHY) += dsi/phy/dsi_phy_28nm.o
 msm-$(CONFIG_DRM_MSM_DSI_20NM_PHY) += dsi/phy/dsi_phy_20nm.o
 msm-$(CONFIG_DRM_MSM_DSI_28NM_8960_PHY) += dsi/phy/dsi_phy_28nm_8960.o
+msm-$(CONFIG_DRM_MSM_DSI_14NM_PHY) += dsi/phy/dsi_phy_14nm.o
 
 ifeq ($(CONFIG_DRM_MSM_DSI_PLL),y)
 msm-y += dsi/pll/dsi_pll.o
 msm-$(CONFIG_DRM_MSM_DSI_28NM_PHY) += dsi/pll/dsi_pll_28nm.o
 msm-$(CONFIG_DRM_MSM_DSI_28NM_8960_PHY) += dsi/pll/dsi_pll_28nm_8960.o
+msm-$(CONFIG_DRM_MSM_DSI_14NM_PHY) += dsi/pll/dsi_pll_14nm.o
 endif
 
 obj-$(CONFIG_DRM_MSM)	+= msm.o

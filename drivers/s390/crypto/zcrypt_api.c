@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  *  zcrypt 2.1.0
  *
@@ -10,20 +11,6 @@
  *  Major cleanup & driver split: Martin Schwidefsky <schwidefsky@de.ibm.com>
  *				  Ralph Wuerthner <rwuerthn@de.ibm.com>
  *  MSGTYPE restruct:		  Holger Dengler <hd@linux.vnet.ibm.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2, or (at your option)
- * any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 #include <linux/module.h>
@@ -81,7 +68,6 @@ EXPORT_SYMBOL(zcrypt_rescan_req);
 static LIST_HEAD(zcrypt_ops_list);
 
 /* Zcrypt related debug feature stuff. */
-static struct dentry *zcrypt_dbf_root;
 debug_info_t *zcrypt_dbf_info;
 
 /**
@@ -95,7 +81,7 @@ static inline int zcrypt_process_rescan(void)
 		atomic_set(&zcrypt_rescan_req, 0);
 		atomic_inc(&zcrypt_rescan_count);
 		ap_bus_force_rescan();
-		ZCRYPT_DBF(DBF_INFO, "rescan count=%07d",
+		ZCRYPT_DBF(DBF_INFO, "rescan count=%07d\n",
 			   atomic_inc_return(&zcrypt_rescan_count));
 		return 1;
 	}
@@ -201,7 +187,7 @@ static inline bool zcrypt_card_compare(struct zcrypt_card *zc,
 				       unsigned weight, unsigned pref_weight)
 {
 	if (!pref_zc)
-		return 0;
+		return false;
 	weight += atomic_read(&zc->load);
 	pref_weight += atomic_read(&pref_zc->load);
 	if (weight == pref_weight)
@@ -215,12 +201,12 @@ static inline bool zcrypt_queue_compare(struct zcrypt_queue *zq,
 					unsigned weight, unsigned pref_weight)
 {
 	if (!pref_zq)
-		return 0;
+		return false;
 	weight += atomic_read(&zq->load);
 	pref_weight += atomic_read(&pref_zq->load);
 	if (weight == pref_weight)
-		return &zq->queue->total_request_count >
-			&pref_zq->queue->total_request_count;
+		return zq->queue->total_request_count >
+			pref_zq->queue->total_request_count;
 	return weight > pref_weight;
 }
 
@@ -375,7 +361,7 @@ out:
 	return rc;
 }
 
-static long zcrypt_send_cprb(struct ica_xcRB *xcRB)
+long zcrypt_send_cprb(struct ica_xcRB *xcRB)
 {
 	struct zcrypt_card *zc, *pref_zc;
 	struct zcrypt_queue *zq, *pref_zq;
@@ -445,6 +431,7 @@ out:
 			      AP_QID_CARD(qid), AP_QID_QUEUE(qid));
 	return rc;
 }
+EXPORT_SYMBOL(zcrypt_send_cprb);
 
 static bool is_desired_ep11_card(unsigned int dev_id,
 				 unsigned short target_num,
@@ -620,7 +607,7 @@ out:
 	return rc;
 }
 
-static void zcrypt_device_status_mask(struct zcrypt_device_matrix *matrix)
+void zcrypt_device_status_mask(struct zcrypt_device_matrix *matrix)
 {
 	struct zcrypt_card *zc;
 	struct zcrypt_queue *zq;
@@ -668,6 +655,7 @@ static void zcrypt_qdepth_mask(char qdepth[AP_DEVICES])
 
 	memset(qdepth, 0, sizeof(char)	* AP_DEVICES);
 	spin_lock(&zcrypt_list_lock);
+	local_bh_disable();
 	for_each_zcrypt_card(zc) {
 		for_each_zcrypt_queue(zq, zc) {
 			if (AP_QID_QUEUE(zq->queue->qid) != ap_domain_index)
@@ -679,6 +667,7 @@ static void zcrypt_qdepth_mask(char qdepth[AP_DEVICES])
 			spin_unlock(&zq->queue->lock);
 		}
 	}
+	local_bh_enable();
 	spin_unlock(&zcrypt_list_lock);
 }
 
@@ -689,6 +678,7 @@ static void zcrypt_perdev_reqcnt(int reqcnt[AP_DEVICES])
 
 	memset(reqcnt, 0, sizeof(int) * AP_DEVICES);
 	spin_lock(&zcrypt_list_lock);
+	local_bh_disable();
 	for_each_zcrypt_card(zc) {
 		for_each_zcrypt_queue(zq, zc) {
 			if (AP_QID_QUEUE(zq->queue->qid) != ap_domain_index)
@@ -699,6 +689,7 @@ static void zcrypt_perdev_reqcnt(int reqcnt[AP_DEVICES])
 			spin_unlock(&zq->queue->lock);
 		}
 	}
+	local_bh_enable();
 	spin_unlock(&zcrypt_list_lock);
 }
 
@@ -710,6 +701,7 @@ static int zcrypt_pendingq_count(void)
 
 	pendingq_count = 0;
 	spin_lock(&zcrypt_list_lock);
+	local_bh_disable();
 	for_each_zcrypt_card(zc) {
 		for_each_zcrypt_queue(zq, zc) {
 			if (AP_QID_QUEUE(zq->queue->qid) != ap_domain_index)
@@ -719,6 +711,7 @@ static int zcrypt_pendingq_count(void)
 			spin_unlock(&zq->queue->lock);
 		}
 	}
+	local_bh_enable();
 	spin_unlock(&zcrypt_list_lock);
 	return pendingq_count;
 }
@@ -731,6 +724,7 @@ static int zcrypt_requestq_count(void)
 
 	requestq_count = 0;
 	spin_lock(&zcrypt_list_lock);
+	local_bh_disable();
 	for_each_zcrypt_card(zc) {
 		for_each_zcrypt_queue(zq, zc) {
 			if (AP_QID_QUEUE(zq->queue->qid) != ap_domain_index)
@@ -740,6 +734,7 @@ static int zcrypt_requestq_count(void)
 			spin_unlock(&zq->queue->lock);
 		}
 	}
+	local_bh_enable();
 	spin_unlock(&zcrypt_list_lock);
 	return requestq_count;
 }
@@ -813,8 +808,10 @@ static long zcrypt_unlocked_ioctl(struct file *filp, unsigned int cmd,
 			do {
 				rc = zcrypt_rsa_modexpo(&mex);
 			} while (rc == -EAGAIN);
-		if (rc)
+		if (rc) {
+			ZCRYPT_DBF(DBF_DEBUG, "ioctl ICARSAMODEXPO rc=%d\n", rc);
 			return rc;
+		}
 		return put_user(mex.outputdatalength, &umex->outputdatalength);
 	}
 	case ICARSACRT: {
@@ -830,8 +827,10 @@ static long zcrypt_unlocked_ioctl(struct file *filp, unsigned int cmd,
 			do {
 				rc = zcrypt_rsa_crt(&crt);
 			} while (rc == -EAGAIN);
-		if (rc)
+		if (rc) {
+			ZCRYPT_DBF(DBF_DEBUG, "ioctl ICARSACRT rc=%d\n", rc);
 			return rc;
+		}
 		return put_user(crt.outputdatalength, &ucrt->outputdatalength);
 	}
 	case ZSECSENDCPRB: {
@@ -847,6 +846,8 @@ static long zcrypt_unlocked_ioctl(struct file *filp, unsigned int cmd,
 			do {
 				rc = zcrypt_send_cprb(&xcRB);
 			} while (rc == -EAGAIN);
+		if (rc)
+			ZCRYPT_DBF(DBF_DEBUG, "ioctl ZSENDCPRB rc=%d\n", rc);
 		if (copy_to_user(uxcRB, &xcRB, sizeof(xcRB)))
 			return -EFAULT;
 		return rc;
@@ -864,6 +865,8 @@ static long zcrypt_unlocked_ioctl(struct file *filp, unsigned int cmd,
 			do {
 				rc = zcrypt_send_ep11_cprb(&xcrb);
 			} while (rc == -EAGAIN);
+		if (rc)
+			ZCRYPT_DBF(DBF_DEBUG, "ioctl ZSENDEP11CPRB rc=%d\n", rc);
 		if (copy_to_user(uxcrb, &xcrb, sizeof(xcrb)))
 			return -EFAULT;
 		return rc;
@@ -1419,7 +1422,6 @@ void zcrypt_rng_device_remove(void)
 
 int __init zcrypt_debug_init(void)
 {
-	zcrypt_dbf_root = debugfs_create_dir("zcrypt", NULL);
 	zcrypt_dbf_info = debug_register("zcrypt", 1, 1,
 					 DBF_MAX_SPRINTF_ARGS * sizeof(long));
 	debug_register_view(zcrypt_dbf_info, &debug_sprintf_view);
@@ -1430,7 +1432,6 @@ int __init zcrypt_debug_init(void)
 
 void zcrypt_debug_exit(void)
 {
-	debugfs_remove(zcrypt_dbf_root);
 	debug_unregister(zcrypt_dbf_info);
 }
 

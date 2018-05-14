@@ -253,6 +253,7 @@ static void ieee80211_restart_work(struct work_struct *work)
 	WARN(test_bit(SCAN_HW_SCANNING, &local->scanning),
 	     "%s called with hardware scan in progress\n", __func__);
 
+	flush_work(&local->radar_detected_work);
 	rtnl_lock();
 	list_for_each_entry(sdata, &local->interfaces, list)
 		flush_delayed_work(&sdata->dec_tailroom_needed_wk);
@@ -261,6 +262,9 @@ static void ieee80211_restart_work(struct work_struct *work)
 	/* make sure any new ROC will consider local->in_reconfig */
 	flush_delayed_work(&local->roc_work);
 	flush_work(&local->hw_roc_done);
+
+	/* wait for all packet processing to be done */
+	synchronize_net();
 
 	ieee80211_reconfig(local);
 	rtnl_unlock();
@@ -603,6 +607,7 @@ struct ieee80211_hw *ieee80211_alloc_hw_nm(size_t priv_data_len,
 		ARRAY_SIZE(local->ext_capa);
 
 	INIT_LIST_HEAD(&local->interfaces);
+	INIT_LIST_HEAD(&local->mon_list);
 
 	__hw_addr_init(&local->mc_list);
 
@@ -631,8 +636,7 @@ struct ieee80211_hw *ieee80211_alloc_hw_nm(size_t priv_data_len,
 		  ieee80211_dynamic_ps_enable_work);
 	INIT_WORK(&local->dynamic_ps_disable_work,
 		  ieee80211_dynamic_ps_disable_work);
-	setup_timer(&local->dynamic_ps_timer,
-		    ieee80211_dynamic_ps_timer, (unsigned long) local);
+	timer_setup(&local->dynamic_ps_timer, ieee80211_dynamic_ps_timer, 0);
 
 	INIT_WORK(&local->sched_scan_stopped_work,
 		  ieee80211_sched_scan_stopped_work);
@@ -1186,6 +1190,7 @@ void ieee80211_unregister_hw(struct ieee80211_hw *hw)
 	cancel_work_sync(&local->reconfig_filter);
 	cancel_work_sync(&local->tdls_chsw_work);
 	flush_work(&local->sched_scan_stopped_work);
+	flush_work(&local->radar_detected_work);
 
 	ieee80211_clear_tx_pending(local);
 	rate_control_deinitialize(local);

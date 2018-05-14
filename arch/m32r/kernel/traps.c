@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *  linux/arch/m32r/kernel/traps.c
  *
@@ -14,7 +15,11 @@
 #include <linux/kallsyms.h>
 #include <linux/stddef.h>
 #include <linux/ptrace.h>
+#include <linux/sched/debug.h>
+#include <linux/sched/task_stack.h>
 #include <linux/mm.h>
+#include <linux/cpu.h>
+
 #include <asm/page.h>
 #include <asm/processor.h>
 

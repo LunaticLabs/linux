@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * This is rewrite of original c2c tool introduced in here:
  *   http://lwn.net/Articles/588866/
@@ -9,10 +10,13 @@
  *   Dick Fowles <fowles@inreach.com>
  *   Joe Mario <jmario@redhat.com>
  */
+#include <errno.h>
+#include <inttypes.h>
 #include <linux/compiler.h>
 #include <linux/kernel.h>
 #include <linux/stringify.h>
 #include <asm/bug.h>
+#include <sys/param.h>
 #include "util.h"
 #include "debug.h"
 #include "builtin.h"
@@ -23,12 +27,11 @@
 #include "sort.h"
 #include "tool.h"
 #include "data.h"
-#include "sort.h"
+#include "event.h"
 #include "evlist.h"
 #include "evsel.h"
-#include <asm/bug.h>
 #include "ui/browsers/hists.h"
-#include "evlist.h"
+#include "thread.h"
 
 struct c2c_hists {
 	struct hists		hists;
@@ -58,7 +61,7 @@ struct c2c_hist_entry {
 	struct hist_entry	he;
 };
 
-static char const *coalesce_default = "pid,tid,iaddr";
+static char const *coalesce_default = "pid,iaddr";
 
 struct perf_c2c {
 	struct perf_tool	tool;
@@ -1720,10 +1723,10 @@ static int c2c_hists__init_sort(struct perf_hpp_list *hpp_list, char *name)
 				tok; tok = strtok_r(NULL, ", ", &tmp)) {	\
 			ret = _fn(hpp_list, tok);				\
 			if (ret == -EINVAL) {					\
-				error("Invalid --fields key: `%s'", tok);	\
+				pr_err("Invalid --fields key: `%s'", tok);	\
 				break;						\
 			} else if (ret == -ESRCH) {				\
-				error("Unknown --fields key: `%s'", tok);	\
+				pr_err("Unknown --fields key: `%s'", tok);	\
 				break;						\
 			}							\
 		}								\
@@ -2218,9 +2221,9 @@ static int perf_c2c__browse_cacheline(struct hist_entry *he)
 	struct hist_browser *browser;
 	int key = -1;
 	const char help[] =
-	" ENTER         Togle callchains (if present) \n"
-	" n             Togle Node details info \n"
-	" s             Togle full lenght of symbol and source line columns \n"
+	" ENTER         Toggle callchains (if present) \n"
+	" n             Toggle Node details info \n"
+	" s             Toggle full length of symbol and source line columns \n"
 	" q             Return back to cacheline list \n";
 
 	/* Display compact version first. */
@@ -2242,7 +2245,7 @@ static int perf_c2c__browse_cacheline(struct hist_entry *he)
 	c2c_browser__update_nr_entries(browser);
 
 	while (1) {
-		key = hist_browser__run(browser, "? - help");
+		key = hist_browser__run(browser, "? - help", true);
 
 		switch (key) {
 		case 's':
@@ -2297,7 +2300,7 @@ static int perf_c2c__hists_browse(struct hists *hists)
 	int key = -1;
 	const char help[] =
 	" d             Display cacheline details \n"
-	" ENTER         Togle callchains (if present) \n"
+	" ENTER         Toggle callchains (if present) \n"
 	" q             Quit \n";
 
 	browser = perf_c2c_browser__new(hists);
@@ -2311,7 +2314,7 @@ static int perf_c2c__hists_browse(struct hists *hists)
 	c2c_browser__update_nr_entries(browser);
 
 	while (1) {
-		key = hist_browser__run(browser, "? - help");
+		key = hist_browser__run(browser, "? - help", true);
 
 		switch (key) {
 		case 'q':
@@ -2334,7 +2337,7 @@ out:
 
 static void perf_c2c_display(struct perf_session *session)
 {
-	if (c2c.use_stdio)
+	if (use_browser == 0)
 		perf_c2c__hists_fprintf(stdout, session);
 	else
 		perf_c2c__hists_browse(&c2c.hists.hists);
@@ -2387,9 +2390,10 @@ static int setup_callchain(struct perf_evlist *evlist)
 	enum perf_call_graph_mode mode = CALLCHAIN_NONE;
 
 	if ((sample_type & PERF_SAMPLE_REGS_USER) &&
-	    (sample_type & PERF_SAMPLE_STACK_USER))
+	    (sample_type & PERF_SAMPLE_STACK_USER)) {
 		mode = CALLCHAIN_DWARF;
-	else if (sample_type & PERF_SAMPLE_BRANCH_STACK)
+		dwarf_callchain_users = true;
+	} else if (sample_type & PERF_SAMPLE_BRANCH_STACK)
 		mode = CALLCHAIN_LBR;
 	else if (sample_type & PERF_SAMPLE_CALLCHAIN)
 		mode = CALLCHAIN_FP;
@@ -2476,6 +2480,7 @@ static int build_cl_output(char *cl_sort, bool no_source)
 		"mean_rmt,"
 		"mean_lcl,"
 		"mean_load,"
+		"tot_recs,"
 		"cpucnt,",
 		add_sym ? "symbol," : "",
 		add_dso ? "dso," : "",
@@ -2517,7 +2522,7 @@ static int perf_c2c__report(int argc, const char **argv)
 {
 	struct perf_session *session;
 	struct ui_progress prog;
-	struct perf_data_file file = {
+	struct perf_data data = {
 		.mode = PERF_DATA_MODE_READ,
 	};
 	char callchain_default_opt[] = CALLCHAIN_DEFAULT_OPT;
@@ -2535,7 +2540,7 @@ static int perf_c2c__report(int argc, const char **argv)
 	OPT_BOOLEAN(0, "stdio", &c2c.use_stdio, "Use the stdio interface"),
 #endif
 	OPT_BOOLEAN(0, "stats", &c2c.stats_only,
-		    "Use the stdio interface"),
+		    "Display only statistic tables (implies --stdio)"),
 	OPT_BOOLEAN(0, "full-symbols", &c2c.symbol_full,
 		    "Display full length of symbols"),
 	OPT_BOOLEAN(0, "no-source", &no_source,
@@ -2566,8 +2571,8 @@ static int perf_c2c__report(int argc, const char **argv)
 	if (!input_name || !strlen(input_name))
 		input_name = "perf.data";
 
-	file.path  = input_name;
-	file.force = symbol_conf.force;
+	data.file.path = input_name;
+	data.force     = symbol_conf.force;
 
 	err = setup_display(display);
 	if (err)
@@ -2585,7 +2590,7 @@ static int perf_c2c__report(int argc, const char **argv)
 		goto out;
 	}
 
-	session = perf_session__new(&file, 0, &c2c.tool);
+	session = perf_session__new(&data, 0, &c2c.tool);
 	if (session == NULL) {
 		pr_debug("No memory for session\n");
 		goto out;
@@ -2605,7 +2610,7 @@ static int perf_c2c__report(int argc, const char **argv)
 		goto out_session;
 
 	/* No pipe support at the moment. */
-	if (perf_data_file__is_pipe(session->file)) {
+	if (perf_data__is_pipe(session->data)) {
 		pr_debug("No pipe support at the moment.\n");
 		goto out_session;
 	}
@@ -2726,6 +2731,7 @@ static int perf_c2c__record(int argc, const char **argv)
 		if (!perf_mem_events[j].supported) {
 			pr_err("failed: event '%s' not supported\n",
 			       perf_mem_events[j].name);
+			free(rec_argv);
 			return -1;
 		}
 
@@ -2754,12 +2760,12 @@ static int perf_c2c__record(int argc, const char **argv)
 		pr_debug("\n");
 	}
 
-	ret = cmd_record(i, rec_argv, NULL);
+	ret = cmd_record(i, rec_argv);
 	free(rec_argv);
 	return ret;
 }
 
-int cmd_c2c(int argc, const char **argv, const char *prefix __maybe_unused)
+int cmd_c2c(int argc, const char **argv)
 {
 	argc = parse_options(argc, argv, c2c_options, c2c_usage,
 			     PARSE_OPT_STOP_AT_NON_OPTION);

@@ -75,10 +75,8 @@ static int acpi_processor_ppc_notifier(struct notifier_block *nb,
 	struct acpi_processor *pr;
 	unsigned int ppc = 0;
 
-	if (event == CPUFREQ_START && ignore_ppc <= 0) {
+	if (ignore_ppc < 0)
 		ignore_ppc = 0;
-		return 0;
-	}
 
 	if (ignore_ppc)
 		return 0;
@@ -161,7 +159,7 @@ void acpi_processor_ppc_has_changed(struct acpi_processor *pr, int event_flag)
 {
 	int ret;
 
-	if (ignore_ppc) {
+	if (ignore_ppc || !pr->performance) {
 		/*
 		 * Only when it is notification event, the _OST object
 		 * will be evaluated. Otherwise it is skipped.

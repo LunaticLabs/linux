@@ -15,7 +15,7 @@
 #include <linux/kernel.h>
 #include <linux/notifier.h>
 #include <linux/signal.h>
-#include <linux/sched.h>
+#include <linux/sched/signal.h>
 #include <linux/smp.h>
 #include <linux/init.h>
 #include <linux/uaccess.h>
@@ -257,7 +257,7 @@ static void vfp_raise_exceptions(u32 exceptions, u32 inst, u32 fpscr, struct pt_
 
 	if (exceptions == VFP_EXCEPTION_ERROR) {
 		vfp_panic("unhandled bounce", inst);
-		vfp_raise_sigfpe(0, regs);
+		vfp_raise_sigfpe(FPE_FIXME, regs);
 		return;
 	}
 

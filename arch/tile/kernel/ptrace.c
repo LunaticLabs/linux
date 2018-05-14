@@ -23,6 +23,8 @@
 #include <linux/elf.h>
 #include <linux/tracehook.h>
 #include <linux/context_tracking.h>
+#include <linux/sched/task_stack.h>
+
 #include <asm/traps.h>
 #include <arch/chip.h>
 
@@ -253,7 +255,7 @@ long compat_arch_ptrace(struct task_struct *child, compat_long_t request,
 
 int do_syscall_trace_enter(struct pt_regs *regs)
 {
-	u32 work = ACCESS_ONCE(current_thread_info()->flags);
+	u32 work = READ_ONCE(current_thread_info()->flags);
 
 	if ((work & _TIF_SYSCALL_TRACE) &&
 	    tracehook_report_syscall_entry(regs)) {

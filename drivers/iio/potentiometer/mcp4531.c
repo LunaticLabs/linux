@@ -207,7 +207,6 @@ static const struct iio_info mcp4531_info = {
 	.read_raw = mcp4531_read_raw,
 	.read_avail = mcp4531_read_avail,
 	.write_raw = mcp4531_write_raw,
-	.driver_module = THIS_MODULE,
 };
 
 #ifdef CONFIG_OF
@@ -284,6 +283,7 @@ static const struct of_device_id mcp4531_of_match[] = {
 	MCP4531_COMPATIBLE("microchip,mcp4662-104", MCP466x_104),
 	{ /* sentinel */ }
 };
+MODULE_DEVICE_TABLE(of, mcp4531_of_match);
 #endif
 
 static int mcp4531_probe(struct i2c_client *client,

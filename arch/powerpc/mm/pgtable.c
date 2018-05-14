@@ -54,7 +54,8 @@ static inline int pte_looks_normal(pte_t pte)
 	return 0;
 #else
 	return (pte_val(pte) &
-		(_PAGE_PRESENT | _PAGE_SPECIAL | _PAGE_NO_CACHE | _PAGE_USER)) ==
+		(_PAGE_PRESENT | _PAGE_SPECIAL | _PAGE_NO_CACHE | _PAGE_USER |
+		 _PAGE_PRIVILEGED)) ==
 		(_PAGE_PRESENT | _PAGE_USER);
 #endif
 }
@@ -193,9 +194,7 @@ void set_pte_at(struct mm_struct *mm, unsigned long addr, pte_t *ptep,
 	 */
 	VM_WARN_ON(pte_present(*ptep) && !pte_protnone(*ptep));
 
-	/*
-	 * Add the pte bit when tryint set a pte
-	 */
+	/* Add the pte bit when trying to set a pte */
 	pte = __pte(pte_val(pte) | _PAGE_PTE);
 
 	/* Note: mm->context.id might not yet have been assigned as

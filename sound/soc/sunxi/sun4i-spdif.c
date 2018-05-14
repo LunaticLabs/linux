@@ -458,11 +458,16 @@ static int sun4i_spdif_runtime_suspend(struct device *dev)
 static int sun4i_spdif_runtime_resume(struct device *dev)
 {
 	struct sun4i_spdif_dev *host  = dev_get_drvdata(dev);
+	int ret;
 
-	clk_prepare_enable(host->spdif_clk);
-	clk_prepare_enable(host->apb_clk);
+	ret = clk_prepare_enable(host->spdif_clk);
+	if (ret)
+		return ret;
+	ret = clk_prepare_enable(host->apb_clk);
+	if (ret)
+		clk_disable_unprepare(host->spdif_clk);
 
-	return 0;
+	return ret;
 }
 
 static int sun4i_spdif_probe(struct platform_device *pdev)
@@ -510,8 +515,7 @@ static int sun4i_spdif_probe(struct platform_device *pdev)
 	host->spdif_clk = devm_clk_get(&pdev->dev, "spdif");
 	if (IS_ERR(host->spdif_clk)) {
 		dev_err(&pdev->dev, "failed to get a spdif clock.\n");
-		ret = PTR_ERR(host->spdif_clk);
-		goto err_disable_apb_clk;
+		return PTR_ERR(host->spdif_clk);
 	}
 
 	host->dma_params_tx.addr = res->start + quirks->reg_dac_txdata;
@@ -521,11 +525,12 @@ static int sun4i_spdif_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, host);
 
 	if (quirks->has_reset) {
-		host->rst = devm_reset_control_get_optional(&pdev->dev, NULL);
+		host->rst = devm_reset_control_get_optional_exclusive(&pdev->dev,
+								      NULL);
 		if (IS_ERR(host->rst) && PTR_ERR(host->rst) == -EPROBE_DEFER) {
 			ret = -EPROBE_DEFER;
 			dev_err(&pdev->dev, "Failed to get reset: %d\n", ret);
-			goto err_disable_apb_clk;
+			return ret;
 		}
 		if (!IS_ERR(host->rst))
 			reset_control_deassert(host->rst);
@@ -534,7 +539,7 @@ static int sun4i_spdif_probe(struct platform_device *pdev)
 	ret = devm_snd_soc_register_component(&pdev->dev,
 				&sun4i_spdif_component, &sun4i_spdif_dai, 1);
 	if (ret)
-		goto err_disable_apb_clk;
+		return ret;
 
 	pm_runtime_enable(&pdev->dev);
 	if (!pm_runtime_enabled(&pdev->dev)) {
@@ -552,9 +557,6 @@ err_suspend:
 		sun4i_spdif_runtime_suspend(&pdev->dev);
 err_unregister:
 	pm_runtime_disable(&pdev->dev);
-	snd_soc_unregister_component(&pdev->dev);
-err_disable_apb_clk:
-	clk_disable_unprepare(host->apb_clk);
 	return ret;
 }
 
@@ -563,9 +565,6 @@ static int sun4i_spdif_remove(struct platform_device *pdev)
 	pm_runtime_disable(&pdev->dev);
 	if (!pm_runtime_status_suspended(&pdev->dev))
 		sun4i_spdif_runtime_suspend(&pdev->dev);
-
-	snd_soc_unregister_platform(&pdev->dev);
-	snd_soc_unregister_component(&pdev->dev);
 
 	return 0;
 }

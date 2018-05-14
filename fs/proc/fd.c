@@ -1,4 +1,5 @@
-#include <linux/sched.h>
+// SPDX-License-Identifier: GPL-2.0
+#include <linux/sched/signal.h>
 #include <linux/errno.h>
 #include <linux/dcache.h>
 #include <linux/path.h>
@@ -84,7 +85,6 @@ static int tid_fd_revalidate(struct dentry *dentry, unsigned int flags)
 {
 	struct files_struct *files;
 	struct task_struct *task;
-	const struct cred *cred;
 	struct inode *inode;
 	unsigned int fd;
 
@@ -108,16 +108,7 @@ static int tid_fd_revalidate(struct dentry *dentry, unsigned int flags)
 				rcu_read_unlock();
 				put_files_struct(files);
 
-				if (task_dumpable(task)) {
-					rcu_read_lock();
-					cred = __task_cred(task);
-					inode->i_uid = cred->euid;
-					inode->i_gid = cred->egid;
-					rcu_read_unlock();
-				} else {
-					inode->i_uid = GLOBAL_ROOT_UID;
-					inode->i_gid = GLOBAL_ROOT_GID;
-				}
+				task_dump_owner(task, 0, &inode->i_uid, &inode->i_gid);
 
 				if (S_ISLNK(inode->i_mode)) {
 					unsigned i_mode = S_IFLNK;
@@ -245,7 +236,7 @@ static int proc_readfd_common(struct file *file, struct dir_context *ctx,
 	for (fd = ctx->pos - 2;
 	     fd < files_fdtable(files)->max_fds;
 	     fd++, ctx->pos++) {
-		char name[PROC_NUMBUF];
+		char name[10 + 1];
 		int len;
 
 		if (!fcheck_files(files, fd))

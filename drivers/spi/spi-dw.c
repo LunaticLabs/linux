@@ -30,13 +30,11 @@
 
 /* Slave spi_dev related */
 struct chip_data {
-	u8 cs;			/* chip select pin */
 	u8 tmode;		/* TR/TO/RO/EEPROM */
 	u8 type;		/* SPI/SSP/MicroWire */
 
 	u8 poll_mode;		/* 1 means use poll mode */
 
-	u8 enable_dma;
 	u16 clk_div;		/* baud rate divider */
 	u32 speed_hz;		/* baud rate */
 	void (*cs_control)(u32 command);
@@ -107,9 +105,9 @@ static const struct file_operations dw_spi_regs_ops = {
 
 static int dw_spi_debugfs_init(struct dw_spi *dws)
 {
-	char name[128];
+	char name[32];
 
-	snprintf(name, 128, "dw_spi-%s", dev_name(&dws->master->dev));
+	snprintf(name, 32, "dw_spi%d", dws->master->bus_num);
 	dws->debugfs = debugfs_create_dir(name, NULL);
 	if (!dws->debugfs)
 		return -ENOMEM;
@@ -486,9 +484,9 @@ int dw_spi_add_host(struct device *dev, struct dw_spi *dws)
 	dws->type = SSI_MOTO_SPI;
 	dws->dma_inited = 0;
 	dws->dma_addr = (dma_addr_t)(dws->paddr + DW_SPI_DR);
-	snprintf(dws->name, sizeof(dws->name), "dw_spi%d", dws->bus_num);
 
-	ret = request_irq(dws->irq, dw_spi_irq, IRQF_SHARED, dws->name, master);
+	ret = request_irq(dws->irq, dw_spi_irq, IRQF_SHARED, dev_name(dev),
+			  master);
 	if (ret < 0) {
 		dev_err(dev, "can not get IRQ\n");
 		goto err_free_master;

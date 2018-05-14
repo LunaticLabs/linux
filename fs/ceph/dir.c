@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 #include <linux/ceph/ceph_debug.h>
 
 #include <linux/spinlock.h>
@@ -172,7 +173,7 @@ __dcache_find_get_entry(struct dentry *parent, u64 idx,
  * the MDS if/when the directory is modified).
  */
 static int __dcache_readdir(struct file *file,  struct dir_context *ctx,
-			    u32 shared_gen)
+			    int shared_gen)
 {
 	struct ceph_file_info *fi = file->private_data;
 	struct dentry *parent = file->f_path.dentry;
@@ -183,7 +184,7 @@ static int __dcache_readdir(struct file *file,  struct dir_context *ctx,
 	u64 idx = 0;
 	int err = 0;
 
-	dout("__dcache_readdir %p v%u at %llx\n", dir, shared_gen, ctx->pos);
+	dout("__dcache_readdir %p v%u at %llx\n", dir, (unsigned)shared_gen, ctx->pos);
 
 	/* search start position */
 	if (ctx->pos > 2) {
@@ -230,11 +231,17 @@ static int __dcache_readdir(struct file *file,  struct dir_context *ctx,
 			goto out;
 		}
 
-		di = ceph_dentry(dentry);
 		spin_lock(&dentry->d_lock);
-		if (di->lease_shared_gen == shared_gen &&
-		    d_really_is_positive(dentry) &&
-		    fpos_cmp(ctx->pos, di->offset) <= 0) {
+		di = ceph_dentry(dentry);
+		if (d_unhashed(dentry) ||
+		    d_really_is_negative(dentry) ||
+		    di->lease_shared_gen != shared_gen) {
+			spin_unlock(&dentry->d_lock);
+			dput(dentry);
+			err = -EAGAIN;
+			goto out;
+		}
+		if (fpos_cmp(ctx->pos, di->offset) <= 0) {
 			emit_dentry = true;
 		}
 		spin_unlock(&dentry->d_lock);
@@ -271,6 +278,11 @@ out:
 		if (ret < 0)
 			err = ret;
 		dput(last);
+		/* last_name no longer match cache index */
+		if (fi->readdir_cache_idx >= 0) {
+			fi->readdir_cache_idx = -1;
+			fi->dir_release_count = 0;
+		}
 	}
 	return err;
 }
@@ -294,7 +306,7 @@ static int ceph_readdir(struct file *file, struct dir_context *ctx)
 	struct ceph_mds_client *mdsc = fsc->mdsc;
 	int i;
 	int err;
-	u32 ftype;
+	unsigned frag = -1;
 	struct ceph_mds_reply_info_parsed *rinfo;
 
 	dout("readdir %p file %p pos %llx\n", inode, file, ctx->pos);
@@ -327,7 +339,7 @@ static int ceph_readdir(struct file *file, struct dir_context *ctx)
 	    ceph_snap(inode) != CEPH_SNAPDIR &&
 	    __ceph_dir_is_complete_ordered(ci) &&
 	    __ceph_caps_issued_mask(ci, CEPH_CAP_FILE_SHARED, 1)) {
-		u32 shared_gen = ci->i_shared_gen;
+		int shared_gen = atomic_read(&ci->i_shared_gen);
 		spin_unlock(&ci->i_ceph_lock);
 		err = __dcache_readdir(file, ctx, shared_gen);
 		if (err != -EAGAIN)
@@ -341,7 +353,6 @@ more:
 	/* do we have the correct frag content buffered? */
 	if (need_send_readdir(fi, ctx->pos)) {
 		struct ceph_mds_request *req;
-		unsigned frag;
 		int op = ceph_snap(inode) == CEPH_SNAPDIR ?
 			CEPH_MDS_OP_LSSNAP : CEPH_MDS_OP_READDIR;
 
@@ -352,8 +363,11 @@ more:
 		}
 
 		if (is_hash_order(ctx->pos)) {
-			frag = ceph_choose_frag(ci, fpos_hash(ctx->pos),
-						NULL, NULL);
+			/* fragtree isn't always accurate. choose frag
+			 * based on previous reply when possible. */
+			if (frag == (unsigned)-1)
+				frag = ceph_choose_frag(ci, fpos_hash(ctx->pos),
+							NULL, NULL);
 		} else {
 			frag = fpos_frag(ctx->pos);
 		}
@@ -370,15 +384,22 @@ more:
 		}
 		/* hints to request -> mds selection code */
 		req->r_direct_mode = USE_AUTH_MDS;
-		req->r_direct_hash = ceph_frag_value(frag);
-		req->r_direct_is_hash = true;
+		if (op == CEPH_MDS_OP_READDIR) {
+			req->r_direct_hash = ceph_frag_value(frag);
+			__set_bit(CEPH_MDS_R_DIRECT_IS_HASH, &req->r_req_flags);
+			req->r_inode_drop = CEPH_CAP_FILE_EXCL;
+		}
 		if (fi->last_name) {
 			req->r_path2 = kstrdup(fi->last_name, GFP_KERNEL);
 			if (!req->r_path2) {
 				ceph_mdsc_put_request(req);
 				return -ENOMEM;
 			}
+		} else if (is_hash_order(ctx->pos)) {
+			req->r_args.readdir.offset_hash =
+				cpu_to_le32(fpos_hash(ctx->pos));
 		}
+
 		req->r_dir_release_cnt = fi->dir_release_count;
 		req->r_dir_ordered_cnt = fi->dir_ordered_count;
 		req->r_readdir_cache_idx = fi->readdir_cache_idx;
@@ -417,7 +438,7 @@ more:
 		fi->frag = frag;
 		fi->last_readdir = req;
 
-		if (req->r_did_prepopulate) {
+		if (test_bit(CEPH_MDS_R_DID_PREPOPULATE, &req->r_req_flags)) {
 			fi->readdir_cache_idx = req->r_readdir_cache_idx;
 			if (fi->readdir_cache_idx < 0) {
 				/* preclude from marking dir ordered */
@@ -476,6 +497,7 @@ more:
 		struct ceph_mds_reply_dir_entry *rde = rinfo->dir_entries + i;
 		struct ceph_vino vino;
 		ino_t ino;
+		u32 ftype;
 
 		BUG_ON(rde->offset < ctx->pos);
 
@@ -498,15 +520,17 @@ more:
 		ctx->pos++;
 	}
 
+	ceph_mdsc_put_request(fi->last_readdir);
+	fi->last_readdir = NULL;
+
 	if (fi->next_offset > 2) {
-		ceph_mdsc_put_request(fi->last_readdir);
-		fi->last_readdir = NULL;
+		frag = fi->frag;
 		goto more;
 	}
 
 	/* more frags? */
 	if (!ceph_frag_is_rightmost(fi->frag)) {
-		unsigned frag = ceph_frag_next(fi->frag);
+		frag = ceph_frag_next(fi->frag);
 		if (is_hash_order(ctx->pos)) {
 			loff_t new_pos = ceph_make_fpos(ceph_frag_value(frag),
 							fi->next_offset, true);
@@ -733,7 +757,7 @@ static struct dentry *ceph_lookup(struct inode *dir, struct dentry *dentry,
 			spin_unlock(&ci->i_ceph_lock);
 			dout(" dir %p complete, -ENOENT\n", dir);
 			d_add(dentry, NULL);
-			di->lease_shared_gen = ci->i_shared_gen;
+			di->lease_shared_gen = atomic_read(&ci->i_shared_gen);
 			return NULL;
 		}
 		spin_unlock(&ci->i_ceph_lock);
@@ -752,7 +776,8 @@ static struct dentry *ceph_lookup(struct inode *dir, struct dentry *dentry,
 		mask |= CEPH_CAP_XATTR_SHARED;
 	req->r_args.getattr.mask = cpu_to_le32(mask);
 
-	req->r_locked_dir = dir;
+	req->r_parent = dir;
+	set_bit(CEPH_MDS_R_PARENT_LOCKED, &req->r_req_flags);
 	err = ceph_mdsc_do_request(mdsc, NULL, req);
 	err = ceph_handle_snapdir(req, dentry, err);
 	dentry = ceph_finish_lookup(req, dentry, err);
@@ -813,10 +838,11 @@ static int ceph_mknod(struct inode *dir, struct dentry *dentry,
 	}
 	req->r_dentry = dget(dentry);
 	req->r_num_caps = 2;
-	req->r_locked_dir = dir;
+	req->r_parent = dir;
+	set_bit(CEPH_MDS_R_PARENT_LOCKED, &req->r_req_flags);
 	req->r_args.mknod.mode = cpu_to_le32(mode);
 	req->r_args.mknod.rdev = cpu_to_le32(rdev);
-	req->r_dentry_drop = CEPH_CAP_FILE_SHARED;
+	req->r_dentry_drop = CEPH_CAP_FILE_SHARED | CEPH_CAP_AUTH_EXCL;
 	req->r_dentry_unless = CEPH_CAP_FILE_EXCL;
 	if (acls.pagelist) {
 		req->r_pagelist = acls.pagelist;
@@ -864,10 +890,11 @@ static int ceph_symlink(struct inode *dir, struct dentry *dentry,
 		ceph_mdsc_put_request(req);
 		goto out;
 	}
-	req->r_locked_dir = dir;
+	req->r_parent = dir;
+	set_bit(CEPH_MDS_R_PARENT_LOCKED, &req->r_req_flags);
 	req->r_dentry = dget(dentry);
 	req->r_num_caps = 2;
-	req->r_dentry_drop = CEPH_CAP_FILE_SHARED;
+	req->r_dentry_drop = CEPH_CAP_FILE_SHARED | CEPH_CAP_AUTH_EXCL;
 	req->r_dentry_unless = CEPH_CAP_FILE_EXCL;
 	err = ceph_mdsc_do_request(mdsc, dir, req);
 	if (!err && !req->r_reply_info.head->is_dentry)
@@ -913,9 +940,10 @@ static int ceph_mkdir(struct inode *dir, struct dentry *dentry, umode_t mode)
 
 	req->r_dentry = dget(dentry);
 	req->r_num_caps = 2;
-	req->r_locked_dir = dir;
+	req->r_parent = dir;
+	set_bit(CEPH_MDS_R_PARENT_LOCKED, &req->r_req_flags);
 	req->r_args.mkdir.mode = cpu_to_le32(mode);
-	req->r_dentry_drop = CEPH_CAP_FILE_SHARED;
+	req->r_dentry_drop = CEPH_CAP_FILE_SHARED | CEPH_CAP_AUTH_EXCL;
 	req->r_dentry_unless = CEPH_CAP_FILE_EXCL;
 	if (acls.pagelist) {
 		req->r_pagelist = acls.pagelist;
@@ -957,11 +985,12 @@ static int ceph_link(struct dentry *old_dentry, struct inode *dir,
 	req->r_dentry = dget(dentry);
 	req->r_num_caps = 2;
 	req->r_old_dentry = dget(old_dentry);
-	req->r_locked_dir = dir;
+	req->r_parent = dir;
+	set_bit(CEPH_MDS_R_PARENT_LOCKED, &req->r_req_flags);
 	req->r_dentry_drop = CEPH_CAP_FILE_SHARED;
 	req->r_dentry_unless = CEPH_CAP_FILE_EXCL;
 	/* release LINK_SHARED on source inode (mds will lock it) */
-	req->r_old_inode_drop = CEPH_CAP_LINK_SHARED;
+	req->r_old_inode_drop = CEPH_CAP_LINK_SHARED | CEPH_CAP_LINK_EXCL;
 	err = ceph_mdsc_do_request(mdsc, dir, req);
 	if (err) {
 		d_drop(dentry);
@@ -1023,7 +1052,8 @@ static int ceph_unlink(struct inode *dir, struct dentry *dentry)
 	}
 	req->r_dentry = dget(dentry);
 	req->r_num_caps = 2;
-	req->r_locked_dir = dir;
+	req->r_parent = dir;
+	set_bit(CEPH_MDS_R_PARENT_LOCKED, &req->r_req_flags);
 	req->r_dentry_drop = CEPH_CAP_FILE_SHARED;
 	req->r_dentry_unless = CEPH_CAP_FILE_EXCL;
 	req->r_inode_drop = drop_caps_for_unlink(inode);
@@ -1066,13 +1096,14 @@ static int ceph_rename(struct inode *old_dir, struct dentry *old_dentry,
 	req->r_num_caps = 2;
 	req->r_old_dentry = dget(old_dentry);
 	req->r_old_dentry_dir = old_dir;
-	req->r_locked_dir = new_dir;
+	req->r_parent = new_dir;
+	set_bit(CEPH_MDS_R_PARENT_LOCKED, &req->r_req_flags);
 	req->r_old_dentry_drop = CEPH_CAP_FILE_SHARED;
 	req->r_old_dentry_unless = CEPH_CAP_FILE_EXCL;
 	req->r_dentry_drop = CEPH_CAP_FILE_SHARED;
 	req->r_dentry_unless = CEPH_CAP_FILE_EXCL;
 	/* release LINK_RDCACHE on source inode (mds will lock it) */
-	req->r_old_inode_drop = CEPH_CAP_LINK_SHARED;
+	req->r_old_inode_drop = CEPH_CAP_LINK_SHARED | CEPH_CAP_LINK_EXCL;
 	if (d_really_is_positive(new_dentry))
 		req->r_inode_drop = drop_caps_for_unlink(d_inode(new_dentry));
 	err = ceph_mdsc_do_request(mdsc, old_dir, req);
@@ -1082,16 +1113,7 @@ static int ceph_rename(struct inode *old_dir, struct dentry *old_dentry,
 		 * do_request, above).  If there is no trace, we need
 		 * to do it here.
 		 */
-
-		/* d_move screws up sibling dentries' offsets */
-		ceph_dir_clear_complete(old_dir);
-		ceph_dir_clear_complete(new_dir);
-
 		d_move(old_dentry, new_dentry);
-
-		/* ensure target dentry is invalidated, despite
-		   rehashing bug in vfs_rename_dir */
-		ceph_invalidate_dentry_lease(new_dentry);
 	}
 	ceph_mdsc_put_request(req);
 	return err;
@@ -1175,12 +1197,12 @@ static int dir_lease_is_valid(struct inode *dir, struct dentry *dentry)
 	int valid = 0;
 
 	spin_lock(&ci->i_ceph_lock);
-	if (ci->i_shared_gen == di->lease_shared_gen)
+	if (atomic_read(&ci->i_shared_gen) == di->lease_shared_gen)
 		valid = __ceph_caps_issued_mask(ci, CEPH_CAP_FILE_SHARED, 1);
 	spin_unlock(&ci->i_ceph_lock);
 	dout("dir_lease_is_valid dir %p v%u dentry %p v%u = %d\n",
-	     dir, (unsigned)ci->i_shared_gen, dentry,
-	     (unsigned)di->lease_shared_gen, valid);
+	     dir, (unsigned)atomic_read(&ci->i_shared_gen),
+	     dentry, (unsigned)di->lease_shared_gen, valid);
 	return valid;
 }
 
@@ -1194,7 +1216,7 @@ static int ceph_d_revalidate(struct dentry *dentry, unsigned int flags)
 	struct inode *dir;
 
 	if (flags & LOOKUP_RCU) {
-		parent = ACCESS_ONCE(dentry->d_parent);
+		parent = READ_ONCE(dentry->d_parent);
 		dir = d_inode_rcu(parent);
 		if (!dir)
 			return -ECHILD;
@@ -1237,11 +1259,12 @@ static int ceph_d_revalidate(struct dentry *dentry, unsigned int flags)
 			return -ECHILD;
 
 		op = ceph_snap(dir) == CEPH_SNAPDIR ?
-			CEPH_MDS_OP_LOOKUPSNAP : CEPH_MDS_OP_GETATTR;
+			CEPH_MDS_OP_LOOKUPSNAP : CEPH_MDS_OP_LOOKUP;
 		req = ceph_mdsc_create_request(mdsc, op, USE_ANY_MDS);
 		if (!IS_ERR(req)) {
 			req->r_dentry = dget(dentry);
-			req->r_num_caps = op == CEPH_MDS_OP_GETATTR ? 1 : 2;
+			req->r_num_caps = 2;
+			req->r_parent = dir;
 
 			mask = CEPH_STAT_CAP_INODE | CEPH_CAP_AUTH_SHARED;
 			if (ceph_security_xattr_wanted(dir))
@@ -1307,24 +1330,37 @@ static void ceph_d_release(struct dentry *dentry)
  */
 static void ceph_d_prune(struct dentry *dentry)
 {
-	dout("ceph_d_prune %p\n", dentry);
+	struct ceph_inode_info *dir_ci;
+	struct ceph_dentry_info *di;
+
+	dout("ceph_d_prune %pd %p\n", dentry, dentry);
 
 	/* do we have a valid parent? */
 	if (IS_ROOT(dentry))
 		return;
 
-	/* if we are not hashed, we don't affect dir's completeness */
-	if (d_unhashed(dentry))
+	/* we hold d_lock, so d_parent is stable */
+	dir_ci = ceph_inode(d_inode(dentry->d_parent));
+	if (dir_ci->i_vino.snap == CEPH_SNAPDIR)
 		return;
 
-	if (ceph_snap(d_inode(dentry->d_parent)) == CEPH_SNAPDIR)
+	/* who calls d_delete() should also disable dcache readdir */
+	if (d_really_is_negative(dentry))
 		return;
 
-	/*
-	 * we hold d_lock, so d_parent is stable, and d_fsdata is never
-	 * cleared until d_release
-	 */
-	ceph_dir_clear_complete(d_inode(dentry->d_parent));
+	/* d_fsdata does not get cleared until d_release */
+	if (!d_unhashed(dentry)) {
+		__ceph_dir_clear_complete(dir_ci);
+		return;
+	}
+
+	/* Disable dcache readdir just in case that someone called d_drop()
+	 * or d_invalidate(), but MDS didn't revoke CEPH_CAP_FILE_SHARED
+	 * properly (dcache readdir is still enabled) */
+	di = ceph_dentry(dentry);
+	if (di->offset > 0 &&
+	    di->lease_shared_gen == atomic_read(&dir_ci->i_shared_gen))
+		__ceph_dir_clear_ordered(dir_ci);
 }
 
 /*

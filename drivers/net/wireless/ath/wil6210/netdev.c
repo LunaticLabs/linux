@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2016 Qualcomm Atheros, Inc.
+ * Copyright (c) 2012-2017 Qualcomm Atheros, Inc.
  *
  * Permission to use, copy, modify, and/or distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -21,31 +21,39 @@
 static int wil_open(struct net_device *ndev)
 {
 	struct wil6210_priv *wil = ndev_to_wil(ndev);
+	int rc;
 
-	wil_dbg_misc(wil, "%s()\n", __func__);
+	wil_dbg_misc(wil, "open\n");
 
-	if (debug_fw) {
-		wil_err(wil, "%s() while in debug_fw mode\n", __func__);
+	if (debug_fw ||
+	    test_bit(WMI_FW_CAPABILITY_WMI_ONLY, wil->fw_capabilities)) {
+		wil_err(wil, "while in debug_fw or wmi_only mode\n");
 		return -EINVAL;
 	}
 
-	return wil_up(wil);
+	rc = wil_pm_runtime_get(wil);
+	if (rc < 0)
+		return rc;
+
+	rc = wil_up(wil);
+	if (rc)
+		wil_pm_runtime_put(wil);
+
+	return rc;
 }
 
 static int wil_stop(struct net_device *ndev)
 {
 	struct wil6210_priv *wil = ndev_to_wil(ndev);
+	int rc;
 
-	wil_dbg_misc(wil, "%s()\n", __func__);
+	wil_dbg_misc(wil, "stop\n");
 
-	return wil_down(wil);
-}
+	rc = wil_down(wil);
+	if (!rc)
+		wil_pm_runtime_put(wil);
 
-static int wil_do_ioctl(struct net_device *ndev, struct ifreq *ifr, int cmd)
-{
-	struct wil6210_priv *wil = ndev_to_wil(ndev);
-
-	return wil_ioctl(wil, ifr->ifr_data, cmd);
+	return rc;
 }
 
 static const struct net_device_ops wil_netdev_ops = {
@@ -54,7 +62,6 @@ static const struct net_device_ops wil_netdev_ops = {
 	.ndo_start_xmit		= wil_start_xmit,
 	.ndo_set_mac_address	= eth_mac_addr,
 	.ndo_validate_addr	= eth_validate_addr,
-	.ndo_do_ioctl		= wil_do_ioctl,
 };
 
 static int wil6210_netdev_poll_rx(struct napi_struct *napi, int budget)
@@ -68,7 +75,7 @@ static int wil6210_netdev_poll_rx(struct napi_struct *napi, int budget)
 	done = budget - quota;
 
 	if (done < budget) {
-		napi_complete(napi);
+		napi_complete_done(napi, done);
 		wil6210_unmask_irq_rx(wil);
 		wil_dbg_txrx(wil, "NAPI RX complete\n");
 	}
@@ -132,7 +139,7 @@ void *wil_if_alloc(struct device *dev)
 	wil->wdev = wdev;
 	wil->radio_wdev = wdev;
 
-	wil_dbg_misc(wil, "%s()\n", __func__);
+	wil_dbg_misc(wil, "if_alloc\n");
 
 	rc = wil_priv_init(wil);
 	if (rc) {
@@ -143,7 +150,7 @@ void *wil_if_alloc(struct device *dev)
 	wdev->iftype = NL80211_IFTYPE_STATION; /* TODO */
 	/* default monitor channel */
 	ch = wdev->wiphy->bands[NL80211_BAND_60GHZ]->channels;
-	cfg80211_chandef_create(&wdev->preset_chandef, ch, NL80211_CHAN_NO_HT);
+	cfg80211_chandef_create(&wil->monitor_chandef, ch, NL80211_CHAN_NO_HT);
 
 	ndev = alloc_netdev(0, "wlan%d", NET_NAME_UNKNOWN, wil_dev_setup);
 	if (!ndev) {
@@ -179,7 +186,7 @@ void wil_if_free(struct wil6210_priv *wil)
 {
 	struct net_device *ndev = wil_to_ndev(wil);
 
-	wil_dbg_misc(wil, "%s()\n", __func__);
+	wil_dbg_misc(wil, "if_free\n");
 
 	if (!ndev)
 		return;
@@ -234,7 +241,7 @@ void wil_if_remove(struct wil6210_priv *wil)
 	struct net_device *ndev = wil_to_ndev(wil);
 	struct wireless_dev *wdev = wil_to_wdev(wil);
 
-	wil_dbg_misc(wil, "%s()\n", __func__);
+	wil_dbg_misc(wil, "if_remove\n");
 
 	unregister_netdev(ndev);
 	wiphy_unregister(wdev->wiphy);

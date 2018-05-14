@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2015 Broadcom Corporation
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License as
- * published by the Free Software Foundation version 2.
- *
- * This program is distributed "as is" WITHOUT ANY WARRANTY of any
- * kind, whether express or implied; without even the implied warranty
- * of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
 
 #include <linux/kernel.h>
@@ -47,24 +39,22 @@ MODULE_DEVICE_TABLE(of, iproc_pcie_of_match_table);
 static int iproc_pcie_pltfm_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
-	const struct of_device_id *of_id;
 	struct iproc_pcie *pcie;
 	struct device_node *np = dev->of_node;
 	struct resource reg;
 	resource_size_t iobase = 0;
-	LIST_HEAD(res);
+	LIST_HEAD(resources);
+	struct pci_host_bridge *bridge;
 	int ret;
 
-	of_id = of_match_device(iproc_pcie_of_match_table, dev);
-	if (!of_id)
-		return -EINVAL;
-
-	pcie = devm_kzalloc(dev, sizeof(*pcie), GFP_KERNEL);
-	if (!pcie)
+	bridge = devm_pci_alloc_host_bridge(dev, sizeof(*pcie));
+	if (!bridge)
 		return -ENOMEM;
 
+	pcie = pci_host_bridge_priv(bridge);
+
 	pcie->dev = dev;
-	pcie->type = (enum iproc_pcie_type)of_id->data;
+	pcie->type = (enum iproc_pcie_type) of_device_get_match_data(dev);
 
 	ret = of_address_to_resource(np, 0, &reg);
 	if (ret < 0) {
@@ -72,7 +62,8 @@ static int iproc_pcie_pltfm_probe(struct platform_device *pdev)
 		return ret;
 	}
 
-	pcie->base = devm_ioremap(dev, reg.start, resource_size(&reg));
+	pcie->base = devm_pci_remap_cfgspace(dev, reg.start,
+					     resource_size(&reg));
 	if (!pcie->base) {
 		dev_err(dev, "unable to map controller registers\n");
 		return -ENOMEM;
@@ -93,6 +84,13 @@ static int iproc_pcie_pltfm_probe(struct platform_device *pdev)
 		pcie->need_ob_cfg = true;
 	}
 
+	/*
+	 * DT nodes are not used by all platforms that use the iProc PCIe
+	 * core driver. For platforms that require explict inbound mapping
+	 * configuration, "dma-ranges" would have been present in DT
+	 */
+	pcie->need_ib_cfg = of_property_read_bool(np, "dma-ranges");
+
 	/* PHY use is optional */
 	pcie->phy = devm_phy_get(dev, "pcie-phy");
 	if (IS_ERR(pcie->phy)) {
@@ -101,10 +99,10 @@ static int iproc_pcie_pltfm_probe(struct platform_device *pdev)
 		pcie->phy = NULL;
 	}
 
-	ret = of_pci_get_host_bridge_resources(np, 0, 0xff, &res, &iobase);
+	ret = of_pci_get_host_bridge_resources(np, 0, 0xff, &resources,
+					       &iobase);
 	if (ret) {
-		dev_err(dev,
-			"unable to get PCI host bridge resources\n");
+		dev_err(dev, "unable to get PCI host bridge resources\n");
 		return ret;
 	}
 
@@ -117,14 +115,15 @@ static int iproc_pcie_pltfm_probe(struct platform_device *pdev)
 		pcie->map_irq = of_irq_parse_and_map_pci;
 	}
 
-	ret = iproc_pcie_setup(pcie, &res);
-	if (ret)
+	ret = iproc_pcie_setup(pcie, &resources);
+	if (ret) {
 		dev_err(dev, "PCIe controller setup failed\n");
-
-	pci_free_resource_list(&res);
+		pci_free_resource_list(&resources);
+		return ret;
+	}
 
 	platform_set_drvdata(pdev, pcie);
-	return ret;
+	return 0;
 }
 
 static int iproc_pcie_pltfm_remove(struct platform_device *pdev)
@@ -134,6 +133,13 @@ static int iproc_pcie_pltfm_remove(struct platform_device *pdev)
 	return iproc_pcie_remove(pcie);
 }
 
+static void iproc_pcie_pltfm_shutdown(struct platform_device *pdev)
+{
+	struct iproc_pcie *pcie = platform_get_drvdata(pdev);
+
+	iproc_pcie_shutdown(pcie);
+}
+
 static struct platform_driver iproc_pcie_pltfm_driver = {
 	.driver = {
 		.name = "iproc-pcie",
@@ -141,6 +147,7 @@ static struct platform_driver iproc_pcie_pltfm_driver = {
 	},
 	.probe = iproc_pcie_pltfm_probe,
 	.remove = iproc_pcie_pltfm_remove,
+	.shutdown = iproc_pcie_pltfm_shutdown,
 };
 module_platform_driver(iproc_pcie_pltfm_driver);
 

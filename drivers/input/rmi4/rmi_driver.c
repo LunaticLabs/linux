@@ -41,6 +41,13 @@ void rmi_free_function_list(struct rmi_device *rmi_dev)
 
 	rmi_dbg(RMI_DEBUG_CORE, &rmi_dev->dev, "Freeing function list\n");
 
+	/* Doing it in the reverse order so F01 will be removed last */
+	list_for_each_entry_safe_reverse(fn, tmp,
+					 &data->function_list, node) {
+		list_del(&fn->node);
+		rmi_unregister_function(fn);
+	}
+
 	devm_kfree(&rmi_dev->dev, data->irq_memory);
 	data->irq_memory = NULL;
 	data->irq_status = NULL;
@@ -50,13 +57,6 @@ void rmi_free_function_list(struct rmi_device *rmi_dev)
 
 	data->f01_container = NULL;
 	data->f34_container = NULL;
-
-	/* Doing it in the reverse order so F01 will be removed last */
-	list_for_each_entry_safe_reverse(fn, tmp,
-					 &data->function_list, node) {
-		list_del(&fn->node);
-		rmi_unregister_function(fn);
-	}
 }
 
 static int reset_one_function(struct rmi_function *fn)
@@ -230,8 +230,10 @@ static irqreturn_t rmi_irq_fn(int irq, void *dev_id)
 		rmi_dbg(RMI_DEBUG_CORE, &rmi_dev->dev,
 			"Failed to process interrupt request: %d\n", ret);
 
-	if (count)
+	if (count) {
 		kfree(attn_data.data);
+		attn_data.data = NULL;
+	}
 
 	if (!kfifo_is_empty(&drvdata->attn_fifo))
 		return rmi_irq_fn(irq, dev_id);
@@ -251,7 +253,7 @@ static int rmi_irq_init(struct rmi_device *rmi_dev)
 
 	ret = devm_request_threaded_irq(&rmi_dev->dev, pdata->irq, NULL,
 					rmi_irq_fn, irq_flags | IRQF_ONESHOT,
-					dev_name(rmi_dev->xport->dev),
+					dev_driver_string(rmi_dev->xport->dev),
 					rmi_dev);
 	if (ret < 0) {
 		dev_err(&rmi_dev->dev, "Failed to register interrupt %d\n",
@@ -263,6 +265,19 @@ static int rmi_irq_init(struct rmi_device *rmi_dev)
 	data->enabled = true;
 
 	return 0;
+}
+
+struct rmi_function *rmi_find_function(struct rmi_device *rmi_dev, u8 number)
+{
+	struct rmi_driver_data *data = dev_get_drvdata(&rmi_dev->dev);
+	struct rmi_function *entry;
+
+	list_for_each_entry(entry, &data->function_list, node) {
+		if (entry->fd.function_number == number)
+			return entry;
+	}
+
+	return NULL;
 }
 
 static int suspend_one_function(struct rmi_function *fn)
@@ -364,7 +379,7 @@ static void rmi_driver_set_input_name(struct rmi_device *rmi_dev,
 				struct input_dev *input)
 {
 	struct rmi_driver_data *data = dev_get_drvdata(&rmi_dev->dev);
-	char *device_name = rmi_f01_get_product_ID(data->f01_container);
+	const char *device_name = rmi_f01_get_product_ID(data->f01_container);
 	char *name;
 
 	name = devm_kasprintf(&rmi_dev->dev, GFP_KERNEL,
@@ -836,7 +851,7 @@ static int rmi_create_function(struct rmi_device *rmi_dev,
 			       void *ctx, const struct pdt_entry *pdt)
 {
 	struct device *dev = &rmi_dev->dev;
-	struct rmi_driver_data *data = dev_get_drvdata(&rmi_dev->dev);
+	struct rmi_driver_data *data = dev_get_drvdata(dev);
 	int *current_irq_count = ctx;
 	struct rmi_function *fn;
 	int i;
@@ -1040,7 +1055,7 @@ int rmi_probe_interrupts(struct rmi_driver_data *data)
 	}
 
 	if (data->bootloader_mode)
-		dev_warn(&rmi_dev->dev, "Device in bootloader mode.\n");
+		dev_warn(dev, "Device in bootloader mode.\n");
 
 	data->irq_count = irq_count;
 	data->num_of_irq_regs = (data->irq_count + 7) / 8;
@@ -1049,7 +1064,7 @@ int rmi_probe_interrupts(struct rmi_driver_data *data)
 	data->irq_memory = devm_kzalloc(dev, size * 4, GFP_KERNEL);
 	if (!data->irq_memory) {
 		dev_err(dev, "Failed to allocate memory for irq masks.\n");
-		return retval;
+		return -ENOMEM;
 	}
 
 	data->irq_status	= data->irq_memory + size * 0;
@@ -1221,16 +1236,21 @@ static int rmi_driver_probe(struct device *dev)
 	if (retval < 0)
 		goto err_destroy_functions;
 
-	if (data->f01_container->dev.driver)
+	if (data->f01_container->dev.driver) {
 		/* Driver already bound, so enable ATTN now. */
-		return rmi_enable_sensor(rmi_dev);
+		retval = rmi_enable_sensor(rmi_dev);
+		if (retval)
+			goto err_disable_irq;
+	}
 
 	return 0;
 
+err_disable_irq:
+	rmi_disable_irq(rmi_dev, false);
 err_destroy_functions:
 	rmi_free_function_list(rmi_dev);
 err:
-	return retval < 0 ? retval : 0;
+	return retval;
 }
 
 static struct rmi_driver rmi_physical_driver = {

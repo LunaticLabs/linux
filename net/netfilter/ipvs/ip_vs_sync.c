@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * IPVS         An implementation of the IP virtual server support for the
  *              LINUX operating system.  IPVS is now implemented as a module
@@ -457,7 +458,7 @@ static inline bool in_persistence(struct ip_vs_conn *cp)
 static int ip_vs_sync_conn_needed(struct netns_ipvs *ipvs,
 				  struct ip_vs_conn *cp, int pkts)
 {
-	unsigned long orig = ACCESS_ONCE(cp->sync_endtime);
+	unsigned long orig = READ_ONCE(cp->sync_endtime);
 	unsigned long now = jiffies;
 	unsigned long n = (now + cp->timeout) & ~3UL;
 	unsigned int sync_refresh_period;
@@ -520,7 +521,7 @@ static int ip_vs_sync_conn_needed(struct netns_ipvs *ipvs,
 		if (!(cp->flags & IP_VS_CONN_F_TEMPLATE) &&
 		    pkts % sync_period != sysctl_sync_threshold(ipvs))
 			return 0;
-	} else if (sync_refresh_period <= 0 &&
+	} else if (!sync_refresh_period &&
 		   pkts != sysctl_sync_threshold(ipvs))
 		return 0;
 
@@ -1635,17 +1636,14 @@ static int
 ip_vs_receive(struct socket *sock, char *buffer, const size_t buflen)
 {
 	struct msghdr		msg = {NULL,};
-	struct kvec		iov;
+	struct kvec		iov = {buffer, buflen};
 	int			len;
 
 	EnterFunction(7);
 
 	/* Receive a packet */
-	iov.iov_base     = buffer;
-	iov.iov_len      = (size_t)buflen;
-
-	len = kernel_recvmsg(sock, &msg, &iov, 1, buflen, MSG_DONTWAIT);
-
+	iov_iter_kvec(&msg.msg_iter, READ | ITER_KVEC, &iov, 1, buflen);
+	len = sock_recvmsg(sock, &msg, MSG_DONTWAIT);
 	if (len < 0)
 		return len;
 
@@ -1791,7 +1789,7 @@ int start_sync_thread(struct netns_ipvs *ipvs, struct ipvs_sync_daemon_cfg *c,
 	u16 mtu, min_mtu;
 
 	IP_VS_DBG(7, "%s(): pid %d\n", __func__, task_pid_nr(current));
-	IP_VS_DBG(7, "Each ip_vs_sync_conn entry needs %Zd bytes\n",
+	IP_VS_DBG(7, "Each ip_vs_sync_conn entry needs %zd bytes\n",
 		  sizeof(struct ip_vs_sync_conn_v0));
 
 	if (!ipvs->sync_state) {
@@ -1849,7 +1847,7 @@ int start_sync_thread(struct netns_ipvs *ipvs, struct ipvs_sync_daemon_cfg *c,
 	if (state == IP_VS_STATE_MASTER) {
 		struct ipvs_master_sync_state *ms;
 
-		ipvs->ms = kzalloc(count * sizeof(ipvs->ms[0]), GFP_KERNEL);
+		ipvs->ms = kcalloc(count, sizeof(ipvs->ms[0]), GFP_KERNEL);
 		if (!ipvs->ms)
 			goto out;
 		ms = ipvs->ms;
@@ -1862,7 +1860,7 @@ int start_sync_thread(struct netns_ipvs *ipvs, struct ipvs_sync_daemon_cfg *c,
 			ms->ipvs = ipvs;
 		}
 	} else {
-		array = kzalloc(count * sizeof(struct task_struct *),
+		array = kcalloc(count, sizeof(struct task_struct *),
 				GFP_KERNEL);
 		if (!array)
 			goto out;

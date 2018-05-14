@@ -83,10 +83,9 @@ static void ixgb_setup_rctl(struct ixgb_adapter *adapter);
 static void ixgb_clean_tx_ring(struct ixgb_adapter *adapter);
 static void ixgb_clean_rx_ring(struct ixgb_adapter *adapter);
 static void ixgb_set_multi(struct net_device *netdev);
-static void ixgb_watchdog(unsigned long data);
+static void ixgb_watchdog(struct timer_list *t);
 static netdev_tx_t ixgb_xmit_frame(struct sk_buff *skb,
 				   struct net_device *netdev);
-static struct net_device_stats *ixgb_get_stats(struct net_device *netdev);
 static int ixgb_change_mtu(struct net_device *netdev, int new_mtu);
 static int ixgb_set_mac(struct net_device *netdev, void *p);
 static irqreturn_t ixgb_intr(int irq, void *data);
@@ -367,7 +366,6 @@ static const struct net_device_ops ixgb_netdev_ops = {
 	.ndo_open 		= ixgb_open,
 	.ndo_stop		= ixgb_close,
 	.ndo_start_xmit		= ixgb_xmit_frame,
-	.ndo_get_stats		= ixgb_get_stats,
 	.ndo_set_rx_mode	= ixgb_set_multi,
 	.ndo_validate_addr	= eth_validate_addr,
 	.ndo_set_mac_address	= ixgb_set_mac,
@@ -510,9 +508,7 @@ ixgb_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 
 	adapter->part_num = ixgb_get_ee_pba_number(&adapter->hw);
 
-	init_timer(&adapter->watchdog_timer);
-	adapter->watchdog_timer.function = ixgb_watchdog;
-	adapter->watchdog_timer.data = (unsigned long)adapter;
+	timer_setup(&adapter->watchdog_timer, ixgb_watchdog, 0);
 
 	INIT_WORK(&adapter->tx_timeout_task, ixgb_tx_timeout_task);
 
@@ -1154,9 +1150,9 @@ alloc_failed:
  **/
 
 static void
-ixgb_watchdog(unsigned long data)
+ixgb_watchdog(struct timer_list *t)
 {
-	struct ixgb_adapter *adapter = (struct ixgb_adapter *)data;
+	struct ixgb_adapter *adapter = from_timer(adapter, t, watchdog_timer);
 	struct net_device *netdev = adapter->netdev;
 	struct ixgb_desc_ring *txdr = &adapter->tx_ring;
 
@@ -1597,20 +1593,6 @@ ixgb_tx_timeout_task(struct work_struct *work)
 }
 
 /**
- * ixgb_get_stats - Get System Network Statistics
- * @netdev: network interface device structure
- *
- * Returns the address of the device statistics structure.
- * The statistics are actually updated from the timer callback.
- **/
-
-static struct net_device_stats *
-ixgb_get_stats(struct net_device *netdev)
-{
-	return &netdev->stats;
-}
-
-/**
  * ixgb_change_mtu - Change the Maximum Transfer Unit
  * @netdev: network interface device structure
  * @new_mtu: new value for maximum frame size
@@ -1817,7 +1799,7 @@ ixgb_clean(struct napi_struct *napi, int budget)
 
 	/* If budget not fully consumed, exit the polling mode */
 	if (work_done < budget) {
-		napi_complete(napi);
+		napi_complete_done(napi, work_done);
 		if (!test_bit(__IXGB_DOWN, &adapter->flags))
 			ixgb_irq_enable(adapter);
 	}

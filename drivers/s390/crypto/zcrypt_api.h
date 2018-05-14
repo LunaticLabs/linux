@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  *  zcrypt 2.1.0
  *
@@ -10,20 +11,6 @@
  *  Major cleanup & driver split: Martin Schwidefsky <schwidefsky@de.ibm.com>
  *				  Ralph Wuerthner <rwuerthn@de.ibm.com>
  *  MSGTYPE restruct:		  Holger Dengler <hd@linux.vnet.ibm.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2, or (at your option)
- * any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 #ifndef _ZCRYPT_API_H_
@@ -76,6 +63,7 @@ struct ica_z90_status {
 #define ZCRYPT_CEX3A		8
 #define ZCRYPT_CEX4	       10
 #define ZCRYPT_CEX5	       11
+#define ZCRYPT_CEX6	       12
 
 /**
  * Large random numbers are pulled in 4096 byte chunks from the crypto cards
@@ -190,5 +178,7 @@ void zcrypt_msgtype_unregister(struct zcrypt_ops *);
 struct zcrypt_ops *zcrypt_msgtype(unsigned char *, int);
 int zcrypt_api_init(void);
 void zcrypt_api_exit(void);
+long zcrypt_send_cprb(struct ica_xcRB *xcRB);
+void zcrypt_device_status_mask(struct zcrypt_device_matrix *devstatus);
 
 #endif /* _ZCRYPT_API_H_ */

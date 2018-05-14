@@ -663,26 +663,8 @@ acpi_status acpi_os_write_port(acpi_io_address port, u32 value, u32 width)
 
 EXPORT_SYMBOL(acpi_os_write_port);
 
-acpi_status
-acpi_os_read_memory(acpi_physical_address phys_addr, u64 *value, u32 width)
+int acpi_os_read_iomem(void __iomem *virt_addr, u64 *value, u32 width)
 {
-	void __iomem *virt_addr;
-	unsigned int size = width / 8;
-	bool unmap = false;
-	u64 dummy;
-
-	rcu_read_lock();
-	virt_addr = acpi_map_vaddr_lookup(phys_addr, size);
-	if (!virt_addr) {
-		rcu_read_unlock();
-		virt_addr = acpi_os_ioremap(phys_addr, size);
-		if (!virt_addr)
-			return AE_BAD_ADDRESS;
-		unmap = true;
-	}
-
-	if (!value)
-		value = &dummy;
 
 	switch (width) {
 	case 8:
@@ -698,8 +680,36 @@ acpi_os_read_memory(acpi_physical_address phys_addr, u64 *value, u32 width)
 		*(u64 *) value = readq(virt_addr);
 		break;
 	default:
-		BUG();
+		return -EINVAL;
 	}
+
+	return 0;
+}
+
+acpi_status
+acpi_os_read_memory(acpi_physical_address phys_addr, u64 *value, u32 width)
+{
+	void __iomem *virt_addr;
+	unsigned int size = width / 8;
+	bool unmap = false;
+	u64 dummy;
+	int error;
+
+	rcu_read_lock();
+	virt_addr = acpi_map_vaddr_lookup(phys_addr, size);
+	if (!virt_addr) {
+		rcu_read_unlock();
+		virt_addr = acpi_os_ioremap(phys_addr, size);
+		if (!virt_addr)
+			return AE_BAD_ADDRESS;
+		unmap = true;
+	}
+
+	if (!value)
+		value = &dummy;
+
+	error = acpi_os_read_iomem(virt_addr, value, width);
+	BUG_ON(error);
 
 	if (unmap)
 		iounmap(virt_addr);
@@ -1686,7 +1696,7 @@ acpi_status acpi_os_prepare_sleep(u8 sleep_state, u32 pm1a_control,
 	if (rc < 0)
 		return AE_ERROR;
 	else if (rc > 0)
-		return AE_CTRL_SKIP;
+		return AE_CTRL_TERMINATE;
 
 	return AE_OK;
 }
@@ -1697,6 +1707,7 @@ void acpi_os_set_prepare_sleep(int (*func)(u8 sleep_state,
 	__acpi_os_prepare_sleep = func;
 }
 
+#if (ACPI_REDUCED_HARDWARE)
 acpi_status acpi_os_prepare_extended_sleep(u8 sleep_state, u32 val_a,
 				  u32 val_b)
 {
@@ -1707,13 +1718,35 @@ acpi_status acpi_os_prepare_extended_sleep(u8 sleep_state, u32 val_a,
 	if (rc < 0)
 		return AE_ERROR;
 	else if (rc > 0)
-		return AE_CTRL_SKIP;
+		return AE_CTRL_TERMINATE;
 
 	return AE_OK;
 }
+#else
+acpi_status acpi_os_prepare_extended_sleep(u8 sleep_state, u32 val_a,
+				  u32 val_b)
+{
+	return AE_OK;
+}
+#endif
 
 void acpi_os_set_prepare_extended_sleep(int (*func)(u8 sleep_state,
 			       u32 val_a, u32 val_b))
 {
 	__acpi_os_prepare_extended_sleep = func;
+}
+
+acpi_status acpi_os_enter_sleep(u8 sleep_state,
+				u32 reg_a_value, u32 reg_b_value)
+{
+	acpi_status status;
+
+	if (acpi_gbl_reduced_hardware)
+		status = acpi_os_prepare_extended_sleep(sleep_state,
+							reg_a_value,
+							reg_b_value);
+	else
+		status = acpi_os_prepare_sleep(sleep_state,
+					       reg_a_value, reg_b_value);
+	return status;
 }

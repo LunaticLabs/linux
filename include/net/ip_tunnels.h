@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __NET_IP_TUNNELS_H
 #define __NET_IP_TUNNELS_H 1
 
@@ -58,6 +59,7 @@ struct ip_tunnel_key {
 /* Flags for ip_tunnel_info mode. */
 #define IP_TUNNEL_INFO_TX	0x01	/* represents tx tunnel parameters */
 #define IP_TUNNEL_INFO_IPV6	0x02	/* key contains IPv6 addresses */
+#define IP_TUNNEL_INFO_BRIDGE	0x04	/* represents a bridged tunnel id */
 
 /* Maximum tunnel options length. */
 #define IP_TUNNEL_OPTS_MAX					\
@@ -114,6 +116,12 @@ struct ip_tunnel {
 	u32		o_seqno;	/* The last output seqno */
 	int		tun_hlen;	/* Precalculated header length */
 
+	/* These four fields used only by ERSPAN */
+	u32		index;		/* ERSPAN type II index */
+	u8		erspan_ver;	/* ERSPAN version */
+	u8		dir;		/* ERSPAN direction */
+	u16		hwid;		/* ERSPAN hardware ID */
+
 	struct dst_cache dst_cache;
 
 	struct ip_tunnel_parm parms;
@@ -131,6 +139,7 @@ struct ip_tunnel {
 	unsigned int		prl_count;	/* # of entries in PRL */
 	unsigned int		ip_tnl_net_id;
 	struct gro_cells	gro_cells;
+	__u32			fwmark;
 	bool			collect_md;
 	bool			ignore_df;
 };
@@ -149,8 +158,10 @@ struct ip_tunnel {
 #define TUNNEL_GENEVE_OPT	__cpu_to_be16(0x0800)
 #define TUNNEL_VXLAN_OPT	__cpu_to_be16(0x1000)
 #define TUNNEL_NOCACHE		__cpu_to_be16(0x2000)
+#define TUNNEL_ERSPAN_OPT	__cpu_to_be16(0x4000)
 
-#define TUNNEL_OPTIONS_PRESENT	(TUNNEL_GENEVE_OPT | TUNNEL_VXLAN_OPT)
+#define TUNNEL_OPTIONS_PRESENT \
+		(TUNNEL_GENEVE_OPT | TUNNEL_VXLAN_OPT | TUNNEL_ERSPAN_OPT)
 
 struct tnl_ptk_info {
 	__be16 flags;
@@ -251,7 +262,8 @@ int ip_tunnel_get_iflink(const struct net_device *dev);
 int ip_tunnel_init_net(struct net *net, unsigned int ip_tnl_net_id,
 		       struct rtnl_link_ops *ops, char *devname);
 
-void ip_tunnel_delete_net(struct ip_tunnel_net *itn, struct rtnl_link_ops *ops);
+void ip_tunnel_delete_nets(struct list_head *list_net, unsigned int id,
+			   struct rtnl_link_ops *ops);
 
 void ip_tunnel_xmit(struct sk_buff *skb, struct net_device *dev,
 		    const struct iphdr *tnl_params, const u8 protocol);
@@ -261,8 +273,8 @@ int ip_tunnel_ioctl(struct net_device *dev, struct ip_tunnel_parm *p, int cmd);
 int __ip_tunnel_change_mtu(struct net_device *dev, int new_mtu, bool strict);
 int ip_tunnel_change_mtu(struct net_device *dev, int new_mtu);
 
-struct rtnl_link_stats64 *ip_tunnel_get_stats64(struct net_device *dev,
-						struct rtnl_link_stats64 *tot);
+void ip_tunnel_get_stats64(struct net_device *dev,
+			   struct rtnl_link_stats64 *tot);
 struct ip_tunnel *ip_tunnel_lookup(struct ip_tunnel_net *itn,
 				   int link, __be16 flags,
 				   __be32 remote, __be32 local,
@@ -272,9 +284,9 @@ int ip_tunnel_rcv(struct ip_tunnel *tunnel, struct sk_buff *skb,
 		  const struct tnl_ptk_info *tpi, struct metadata_dst *tun_dst,
 		  bool log_ecn_error);
 int ip_tunnel_changelink(struct net_device *dev, struct nlattr *tb[],
-			 struct ip_tunnel_parm *p);
+			 struct ip_tunnel_parm *p, __u32 fwmark);
 int ip_tunnel_newlink(struct net_device *dev, struct nlattr *tb[],
-		      struct ip_tunnel_parm *p);
+		      struct ip_tunnel_parm *p, __u32 fwmark);
 void ip_tunnel_setup(struct net_device *dev, unsigned int net_id);
 
 struct ip_tunnel_encap_ops {

@@ -50,12 +50,13 @@
 #include <linux/kthread.h>
 #include "cq.h"
 #include "vt.h"
+#include "trace.h"
 
 /**
  * rvt_cq_enter - add a new entry to the completion queue
  * @cq: completion queue
  * @entry: work completion entry to add
- * @sig: true if @entry is solicited
+ * @solicited: true if @entry is solicited
  *
  * This may be called with qp->s_lock held.
  */
@@ -93,19 +94,19 @@ void rvt_cq_enter(struct rvt_cq *cq, struct ib_wc *entry, bool solicited)
 		}
 		return;
 	}
+	trace_rvt_cq_enter(cq, entry, head);
 	if (cq->ip) {
 		wc->uqueue[head].wr_id = entry->wr_id;
 		wc->uqueue[head].status = entry->status;
 		wc->uqueue[head].opcode = entry->opcode;
 		wc->uqueue[head].vendor_err = entry->vendor_err;
 		wc->uqueue[head].byte_len = entry->byte_len;
-		wc->uqueue[head].ex.imm_data =
-			(__u32 __force)entry->ex.imm_data;
+		wc->uqueue[head].ex.imm_data = entry->ex.imm_data;
 		wc->uqueue[head].qp_num = entry->qp->qp_num;
 		wc->uqueue[head].src_qp = entry->src_qp;
 		wc->uqueue[head].wc_flags = entry->wc_flags;
 		wc->uqueue[head].pkey_index = entry->pkey_index;
-		wc->uqueue[head].slid = entry->slid;
+		wc->uqueue[head].slid = ib_lid_cpu16(entry->slid);
 		wc->uqueue[head].sl = entry->sl;
 		wc->uqueue[head].dlid_path_bits = entry->dlid_path_bits;
 		wc->uqueue[head].port_num = entry->port_num;
@@ -196,7 +197,7 @@ struct ib_cq *rvt_create_cq(struct ib_device *ibdev,
 		return ERR_PTR(-EINVAL);
 
 	/* Allocate the completion queue structure. */
-	cq = kzalloc(sizeof(*cq), GFP_KERNEL);
+	cq = kzalloc_node(sizeof(*cq), GFP_KERNEL, rdi->dparms.node);
 	if (!cq)
 		return ERR_PTR(-ENOMEM);
 
@@ -212,7 +213,9 @@ struct ib_cq *rvt_create_cq(struct ib_device *ibdev,
 		sz += sizeof(struct ib_uverbs_wc) * (entries + 1);
 	else
 		sz += sizeof(struct ib_wc) * (entries + 1);
-	wc = vmalloc_user(sz);
+	wc = udata ?
+		vmalloc_user(sz) :
+		vzalloc_node(sz, rdi->dparms.node);
 	if (!wc) {
 		ret = ERR_PTR(-ENOMEM);
 		goto bail_cq;
@@ -367,7 +370,9 @@ int rvt_resize_cq(struct ib_cq *ibcq, int cqe, struct ib_udata *udata)
 		sz += sizeof(struct ib_uverbs_wc) * (cqe + 1);
 	else
 		sz += sizeof(struct ib_wc) * (cqe + 1);
-	wc = vmalloc_user(sz);
+	wc = udata ?
+		vmalloc_user(sz) :
+		vzalloc_node(sz, rdi->dparms.node);
 	if (!wc)
 		return -ENOMEM;
 
@@ -482,6 +487,7 @@ int rvt_poll_cq(struct ib_cq *ibcq, int num_entries, struct ib_wc *entry)
 		if (tail == wc->head)
 			break;
 		/* The kernel doesn't need a RMB since it has the lock. */
+		trace_rvt_cq_poll(cq, &wc->kqueue[tail], npolled);
 		*entry = wc->kqueue[tail];
 		if (tail >= cq->ibcq.cqe)
 			tail = 0;

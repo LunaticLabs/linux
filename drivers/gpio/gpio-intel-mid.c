@@ -295,7 +295,7 @@ static void intel_mid_irq_handler(struct irq_desc *desc)
 			mask = BIT(gpio);
 			/* Clear before handling so we can't lose an edge */
 			writel(mask, gedr);
-			generic_handle_irq(irq_find_mapping(gc->irqdomain,
+			generic_handle_irq(irq_find_mapping(gc->irq.domain,
 							    base + gpio));
 		}
 	}
@@ -321,7 +321,7 @@ static void intel_mid_irq_init_hw(struct intel_mid_gpio *priv)
 	}
 }
 
-static int intel_gpio_runtime_idle(struct device *dev)
+static int __maybe_unused intel_gpio_runtime_idle(struct device *dev)
 {
 	int err = pm_schedule_suspend(dev, 500);
 	return err ?: -EBUSY;

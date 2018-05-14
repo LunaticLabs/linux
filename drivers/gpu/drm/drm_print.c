@@ -23,6 +23,8 @@
  * Rob Clark <robdclark@gmail.com>
  */
 
+#define DEBUG /* for pr_debug() */
+
 #include <stdarg.h>
 #include <linux/seq_file.h>
 #include <drm/drmP.h>
@@ -36,9 +38,15 @@ EXPORT_SYMBOL(__drm_printfn_seq_file);
 
 void __drm_printfn_info(struct drm_printer *p, struct va_format *vaf)
 {
-	dev_printk(KERN_INFO, p->arg, "[" DRM_NAME "] %pV", vaf);
+	dev_info(p->arg, "[" DRM_NAME "] %pV", vaf);
 }
 EXPORT_SYMBOL(__drm_printfn_info);
+
+void __drm_printfn_debug(struct drm_printer *p, struct va_format *vaf)
+{
+	pr_debug("%s %pV", p->prefix, vaf);
+}
+EXPORT_SYMBOL(__drm_printfn_debug);
 
 /**
  * drm_printf - print to a &drm_printer stream
@@ -47,13 +55,57 @@ EXPORT_SYMBOL(__drm_printfn_info);
  */
 void drm_printf(struct drm_printer *p, const char *f, ...)
 {
-	struct va_format vaf;
 	va_list args;
 
 	va_start(args, f);
-	vaf.fmt = f;
-	vaf.va = &args;
-	p->printfn(p, &vaf);
+	drm_vprintf(p, f, &args);
 	va_end(args);
 }
 EXPORT_SYMBOL(drm_printf);
+
+#define DRM_PRINTK_FMT "[" DRM_NAME ":%s]%s %pV"
+
+void drm_dev_printk(const struct device *dev, const char *level,
+		    unsigned int category, const char *function_name,
+		    const char *prefix, const char *format, ...)
+{
+	struct va_format vaf;
+	va_list args;
+
+	if (category != DRM_UT_NONE && !(drm_debug & category))
+		return;
+
+	va_start(args, format);
+	vaf.fmt = format;
+	vaf.va = &args;
+
+	if (dev)
+		dev_printk(level, dev, DRM_PRINTK_FMT, function_name, prefix,
+			   &vaf);
+	else
+		printk("%s" DRM_PRINTK_FMT, level, function_name, prefix, &vaf);
+
+	va_end(args);
+}
+EXPORT_SYMBOL(drm_dev_printk);
+
+void drm_printk(const char *level, unsigned int category,
+		const char *format, ...)
+{
+	struct va_format vaf;
+	va_list args;
+
+	if (category != DRM_UT_NONE && !(drm_debug & category))
+		return;
+
+	va_start(args, format);
+	vaf.fmt = format;
+	vaf.va = &args;
+
+	printk("%s" "[" DRM_NAME ":%ps]%s %pV",
+	       level, __builtin_return_address(0),
+	       strcmp(level, KERN_ERR) == 0 ? " *ERROR*" : "", &vaf);
+
+	va_end(args);
+}
+EXPORT_SYMBOL(drm_printk);

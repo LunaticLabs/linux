@@ -233,7 +233,7 @@ static void __dlm_put_mle(struct dlm_master_list_entry *mle)
 
 	assert_spin_locked(&dlm->spinlock);
 	assert_spin_locked(&dlm->master_lock);
-	if (!atomic_read(&mle->mle_refs.refcount)) {
+	if (!kref_read(&mle->mle_refs)) {
 		/* this may or may not crash, but who cares.
 		 * it's a BUG. */
 		mlog(ML_ERROR, "bad mle: %p\n", mle);
@@ -1122,13 +1122,6 @@ recheck:
 	/* sleep if we haven't finished voting yet */
 	if (sleep) {
 		unsigned long timeo = msecs_to_jiffies(DLM_MASTERY_TIMEOUT_MS);
-
-		/*
-		if (atomic_read(&mle->mle_refs.refcount) < 2)
-			mlog(ML_ERROR, "mle (%p) refs=%d, name=%.*s\n", mle,
-			atomic_read(&mle->mle_refs.refcount),
-			res->lockname.len, res->lockname.name);
-		*/
 		atomic_set(&mle->woken, 0);
 		(void)wait_event_timeout(mle->wq,
 					 (atomic_read(&mle->woken) == 1),
@@ -1979,7 +1972,7 @@ ok:
 		 * on this mle. */
 		spin_lock(&dlm->master_lock);
 
-		rr = atomic_read(&mle->mle_refs.refcount);
+		rr = kref_read(&mle->mle_refs);
 		if (mle->inuse > 0) {
 			if (extra_ref && rr < 3)
 				err = 1;
@@ -2616,7 +2609,9 @@ static int dlm_migrate_lockres(struct dlm_ctxt *dlm,
 	 * otherwise the assert_master from the new
 	 * master will destroy this.
 	 */
-	dlm_get_mle_inuse(mle);
+	if (ret != -EEXIST)
+		dlm_get_mle_inuse(mle);
+
 	spin_unlock(&dlm->master_lock);
 	spin_unlock(&dlm->spinlock);
 
@@ -2924,7 +2919,7 @@ again:
 	/*
 	 * if target is down, we need to clear DLM_LOCK_RES_BLOCK_DIRTY for
 	 * another try; otherwise, we are sure the MIGRATING state is there,
-	 * drop the unneded state which blocked threads trying to DIRTY
+	 * drop the unneeded state which blocked threads trying to DIRTY
 	 */
 	spin_lock(&res->spinlock);
 	BUG_ON(!(res->state & DLM_LOCK_RES_BLOCK_DIRTY));

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR BSD-3-Clause)
 /*
  * platform.c - DesignWare HS OTG Controller platform driver
  *
@@ -111,7 +112,7 @@ static int dwc2_get_dr_mode(struct dwc2_hsotg *hsotg)
 
 	if (mode != hsotg->dr_mode) {
 		dev_warn(hsotg->dev,
-			"Configuration mismatch. dr_mode forced to %s\n",
+			 "Configuration mismatch. dr_mode forced to %s\n",
 			mode == USB_DR_MODE_HOST ? "host" : "device");
 
 		hsotg->dr_mode = mode;
@@ -136,11 +137,11 @@ static int __dwc2_lowlevel_hw_enable(struct dwc2_hsotg *hsotg)
 			return ret;
 	}
 
-	if (hsotg->uphy)
+	if (hsotg->uphy) {
 		ret = usb_phy_init(hsotg->uphy);
-	else if (hsotg->plat && hsotg->plat->phy_init)
+	} else if (hsotg->plat && hsotg->plat->phy_init) {
 		ret = hsotg->plat->phy_init(pdev, hsotg->plat->phy_type);
-	else {
+	} else {
 		ret = phy_power_on(hsotg->phy);
 		if (ret == 0)
 			ret = phy_init(hsotg->phy);
@@ -170,11 +171,11 @@ static int __dwc2_lowlevel_hw_disable(struct dwc2_hsotg *hsotg)
 	struct platform_device *pdev = to_platform_device(hsotg->dev);
 	int ret = 0;
 
-	if (hsotg->uphy)
+	if (hsotg->uphy) {
 		usb_phy_shutdown(hsotg->uphy);
-	else if (hsotg->plat && hsotg->plat->phy_exit)
+	} else if (hsotg->plat && hsotg->plat->phy_exit) {
 		ret = hsotg->plat->phy_exit(pdev, hsotg->plat->phy_type);
-	else {
+	} else {
 		ret = phy_exit(hsotg->phy);
 		if (ret == 0)
 			ret = phy_power_off(hsotg->phy);
@@ -214,20 +215,20 @@ static int dwc2_lowlevel_hw_init(struct dwc2_hsotg *hsotg)
 	hsotg->reset = devm_reset_control_get_optional(hsotg->dev, "dwc2");
 	if (IS_ERR(hsotg->reset)) {
 		ret = PTR_ERR(hsotg->reset);
-		switch (ret) {
-		case -ENOENT:
-		case -ENOTSUPP:
-			hsotg->reset = NULL;
-			break;
-		default:
-			dev_err(hsotg->dev, "error getting reset control %d\n",
-				ret);
-			return ret;
-		}
+		dev_err(hsotg->dev, "error getting reset control %d\n", ret);
+		return ret;
 	}
 
-	if (hsotg->reset)
-		reset_control_deassert(hsotg->reset);
+	reset_control_deassert(hsotg->reset);
+
+	hsotg->reset_ecc = devm_reset_control_get_optional(hsotg->dev, "dwc2-ecc");
+	if (IS_ERR(hsotg->reset_ecc)) {
+		ret = PTR_ERR(hsotg->reset_ecc);
+		dev_err(hsotg->dev, "error getting reset control for ecc %d\n", ret);
+		return ret;
+	}
+
+	reset_control_deassert(hsotg->reset_ecc);
 
 	/* Set default UTMI width */
 	hsotg->phyif = GUSBCFG_PHYIF16;
@@ -326,8 +327,8 @@ static int dwc2_driver_remove(struct platform_device *dev)
 	if (hsotg->ll_hw_enabled)
 		dwc2_lowlevel_hw_disable(hsotg);
 
-	if (hsotg->reset)
-		reset_control_assert(hsotg->reset);
+	reset_control_assert(hsotg->reset);
+	reset_control_assert(hsotg->reset_ecc);
 
 	return 0;
 }
@@ -445,7 +446,7 @@ static int dwc2_driver_probe(struct platform_device *dev)
 	}
 
 	if (hsotg->dr_mode != USB_DR_MODE_PERIPHERAL) {
-		retval = dwc2_hcd_init(hsotg, hsotg->irq);
+		retval = dwc2_hcd_init(hsotg);
 		if (retval) {
 			if (hsotg->gadget_enabled)
 				dwc2_hsotg_remove(hsotg);

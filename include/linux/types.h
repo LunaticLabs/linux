@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _LINUX_TYPES_H
 #define _LINUX_TYPES_H
 
@@ -155,6 +156,7 @@ typedef u32 dma_addr_t;
 #endif
 
 typedef unsigned __bitwise gfp_t;
+typedef unsigned __bitwise slab_flags_t;
 typedef unsigned __bitwise fmode_t;
 
 #ifdef CONFIG_PHYS_ADDR_T_64BIT
@@ -209,7 +211,7 @@ struct ustat {
  * naturally due ABI requirements, but some architectures (like CRIS) have
  * weird ABI and we need to ask it explicitly.
  *
- * The alignment is required to guarantee that bits 0 and 1 of @next will be
+ * The alignment is required to guarantee that bit 0 of @next will be
  * clear under normal conditions -- as long as we use call_rcu(),
  * call_rcu_bh(), call_rcu_sched(), or call_srcu() to queue callback.
  *

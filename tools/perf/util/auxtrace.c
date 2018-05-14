@@ -13,10 +13,10 @@
  *
  */
 
+#include <inttypes.h>
 #include <sys/types.h>
 #include <sys/mman.h>
 #include <stdbool.h>
-#include <ctype.h>
 #include <string.h>
 #include <limits.h>
 #include <errno.h>
@@ -31,9 +31,6 @@
 #include <sys/param.h>
 #include <stdlib.h>
 #include <stdio.h>
-#include <string.h>
-#include <limits.h>
-#include <errno.h>
 #include <linux/list.h>
 
 #include "../perf.h"
@@ -46,7 +43,6 @@
 #include "cpumap.h"
 #include "thread_map.h"
 #include "asm/bug.h"
-#include "symbol/kallsyms.h"
 #include "auxtrace.h"
 
 #include <linux/hash.h>
@@ -56,8 +52,13 @@
 #include "debug.h"
 #include <subcmd/parse-options.h>
 
+#include "cs-etm.h"
 #include "intel-pt.h"
 #include "intel-bts.h"
+#include "arm-spe.h"
+
+#include "sane_ctype.h"
+#include "symbol/kallsyms.h"
 
 int auxtrace_mmap__mmap(struct auxtrace_mmap *mm,
 			struct auxtrace_mmap_params *mp,
@@ -206,7 +207,7 @@ static int auxtrace_queues__grow(struct auxtrace_queues *queues,
 
 static void *auxtrace_copy_data(u64 size, struct perf_session *session)
 {
-	int fd = perf_data_file__fd(session->file);
+	int fd = perf_data__fd(session->data);
 	void *p;
 	ssize_t ret;
 
@@ -303,7 +304,7 @@ static int auxtrace_queues__add_event_buffer(struct auxtrace_queues *queues,
 	if (session->one_mmap) {
 		buffer->data = buffer->data_offset - session->one_mmap_offset +
 			       session->one_mmap_addr;
-	} else if (perf_data_file__is_pipe(session->file)) {
+	} else if (perf_data__is_pipe(session->data)) {
 		buffer->data = auxtrace_copy_data(buffer->size, session);
 		if (!buffer->data)
 			return -ENOMEM;
@@ -320,6 +321,13 @@ static int auxtrace_queues__add_event_buffer(struct auxtrace_queues *queues,
 	return auxtrace_queues__add_buffer(queues, idx, buffer);
 }
 
+static bool filter_cpu(struct perf_session *session, int cpu)
+{
+	unsigned long *cpu_bitmap = session->itrace_synth_opts->cpu_bitmap;
+
+	return cpu_bitmap && cpu != -1 && !test_bit(cpu, cpu_bitmap);
+}
+
 int auxtrace_queues__add_event(struct auxtrace_queues *queues,
 			       struct perf_session *session,
 			       union perf_event *event, off_t data_offset,
@@ -328,6 +336,9 @@ int auxtrace_queues__add_event(struct auxtrace_queues *queues,
 	struct auxtrace_buffer *buffer;
 	unsigned int idx;
 	int err;
+
+	if (filter_cpu(session, event->auxtrace.cpu))
+		return 0;
 
 	buffer = zalloc(sizeof(struct auxtrace_buffer));
 	if (!buffer)
@@ -901,7 +912,10 @@ int perf_event__process_auxtrace_info(struct perf_tool *tool __maybe_unused,
 		return intel_pt_process_auxtrace_info(event, session);
 	case PERF_AUXTRACE_INTEL_BTS:
 		return intel_bts_process_auxtrace_info(event, session);
+	case PERF_AUXTRACE_ARM_SPE:
+		return arm_spe_process_auxtrace_info(event, session);
 	case PERF_AUXTRACE_CS_ETM:
+		return cs_etm__process_auxtrace_info(event, session);
 	case PERF_AUXTRACE_UNKNOWN:
 	default:
 		return -EINVAL;
@@ -945,6 +959,8 @@ void itrace_synth_opts__set_default(struct itrace_synth_opts *synth_opts)
 	synth_opts->instructions = true;
 	synth_opts->branches = true;
 	synth_opts->transactions = true;
+	synth_opts->ptwrites = true;
+	synth_opts->pwr_events = true;
 	synth_opts->errors = true;
 	synth_opts->period_type = PERF_ITRACE_DEFAULT_PERIOD_TYPE;
 	synth_opts->period = PERF_ITRACE_DEFAULT_PERIOD;
@@ -1027,6 +1043,12 @@ int itrace_parse_synth_opts(const struct option *opt, const char *str,
 			break;
 		case 'x':
 			synth_opts->transactions = true;
+			break;
+		case 'w':
+			synth_opts->ptwrites = true;
+			break;
+		case 'p':
+			synth_opts->pwr_events = true;
 			break;
 		case 'e':
 			synth_opts->errors = true;
@@ -1826,7 +1848,7 @@ static int addr_filter__resolve_kernel_syms(struct addr_filter *filt)
 		filt->addr = start;
 		if (filt->range && !filt->size && !filt->sym_to) {
 			filt->size = size;
-			no_size = !!size;
+			no_size = !size;
 		}
 	}
 
@@ -1840,7 +1862,7 @@ static int addr_filter__resolve_kernel_syms(struct addr_filter *filt)
 		if (err)
 			return err;
 		filt->size = start + size - filt->addr;
-		no_size = !!size;
+		no_size = !size;
 	}
 
 	/* The very last symbol in kallsyms does not imply a particular size */

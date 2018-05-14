@@ -1,7 +1,12 @@
+// SPDX-License-Identifier: GPL-2.0
+#include <dirent.h>
+#include <errno.h>
+#include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <linux/rbtree.h>
+#include <sys/ttydefaults.h>
 
 #include "../../util/evsel.h"
 #include "../../util/evlist.h"
@@ -10,6 +15,7 @@
 #include "../../util/sort.h"
 #include "../../util/util.h"
 #include "../../util/top.h"
+#include "../../util/thread.h"
 #include "../../arch/common.h"
 
 #include "../browsers/hists.h"
@@ -18,6 +24,11 @@
 #include "../ui.h"
 #include "map.h"
 #include "annotate.h"
+#include "srcline.h"
+#include "string2.h"
+#include "units.h"
+
+#include "sane_ctype.h"
 
 extern void hist_browser__init_hpp(void);
 
@@ -156,6 +167,7 @@ static int callchain_node__count_rows_rb_tree(struct callchain_node *node)
 
 		list_for_each_entry(chain, &child->val, list) {
 			++n;
+
 			/* We need this because we may not have children */
 			folded_sign = callchain_list__folded(chain);
 			if (folded_sign == '+')
@@ -216,6 +228,7 @@ static int callchain_node__count_rows(struct callchain_node *node)
 
 	list_for_each_entry(chain, &node->val, list) {
 		++n;
+
 		unfolded = chain->unfolded;
 	}
 
@@ -393,7 +406,8 @@ static bool hist_browser__toggle_fold(struct hist_browser *browser)
 
 		if (he->unfolded) {
 			if (he->leaf)
-				he->nr_rows = callchain__count_rows(&he->sorted_chain);
+				he->nr_rows = callchain__count_rows(
+						&he->sorted_chain);
 			else
 				he->nr_rows = hierarchy_count_rows(browser, he, false);
 
@@ -501,8 +515,8 @@ static int hierarchy_set_folding(struct hist_browser *hb, struct hist_entry *he,
 	return n;
 }
 
-static void hist_entry__set_folding(struct hist_entry *he,
-				    struct hist_browser *hb, bool unfold)
+static void __hist_entry__set_folding(struct hist_entry *he,
+				      struct hist_browser *hb, bool unfold)
 {
 	hist_entry__init_have_children(he);
 	he->unfolded = unfold ? he->has_children : false;
@@ -520,12 +534,34 @@ static void hist_entry__set_folding(struct hist_entry *he,
 		he->nr_rows = 0;
 }
 
+static void hist_entry__set_folding(struct hist_entry *he,
+				    struct hist_browser *browser, bool unfold)
+{
+	double percent;
+
+	percent = hist_entry__get_percent_limit(he);
+	if (he->filtered || percent < browser->min_pcnt)
+		return;
+
+	__hist_entry__set_folding(he, browser, unfold);
+
+	if (!he->depth || unfold)
+		browser->nr_hierarchy_entries++;
+	if (he->leaf)
+		browser->nr_callchain_rows += he->nr_rows;
+	else if (unfold && !hist_entry__has_hierarchy_children(he, browser->min_pcnt)) {
+		browser->nr_hierarchy_entries++;
+		he->has_no_entry = true;
+		he->nr_rows = 1;
+	} else
+		he->has_no_entry = false;
+}
+
 static void
 __hist_browser__set_folding(struct hist_browser *browser, bool unfold)
 {
 	struct rb_node *nd;
 	struct hist_entry *he;
-	double percent;
 
 	nd = rb_first(&browser->hists->entries);
 	while (nd) {
@@ -535,21 +571,6 @@ __hist_browser__set_folding(struct hist_browser *browser, bool unfold)
 		nd = __rb_hierarchy_next(nd, HMD_FORCE_CHILD);
 
 		hist_entry__set_folding(he, browser, unfold);
-
-		percent = hist_entry__get_percent_limit(he);
-		if (he->filtered || percent < browser->min_pcnt)
-			continue;
-
-		if (!he->depth || unfold)
-			browser->nr_hierarchy_entries++;
-		if (he->leaf)
-			browser->nr_callchain_rows += he->nr_rows;
-		else if (unfold && !hist_entry__has_hierarchy_children(he, browser->min_pcnt)) {
-			browser->nr_hierarchy_entries++;
-			he->has_no_entry = true;
-			he->nr_rows = 1;
-		} else
-			he->has_no_entry = false;
 	}
 }
 
@@ -562,6 +583,15 @@ static void hist_browser__set_folding(struct hist_browser *browser, bool unfold)
 	browser->b.nr_entries = hist_browser__nr_entries(browser);
 	/* Go to the start, we may be way after valid entries after a collapse */
 	ui_browser__reset_index(&browser->b);
+}
+
+static void hist_browser__set_folding_selected(struct hist_browser *browser, bool unfold)
+{
+	if (!browser->he_selection)
+		return;
+
+	hist_entry__set_folding(browser->he_selection, browser, unfold);
+	browser->b.nr_entries = hist_browser__nr_entries(browser);
 }
 
 static void ui_browser__warn_lost_events(struct ui_browser *browser)
@@ -578,7 +608,8 @@ static int hist_browser__title(struct hist_browser *browser, char *bf, size_t si
 	return browser->title ? browser->title(browser, bf, size) : 0;
 }
 
-int hist_browser__run(struct hist_browser *browser, const char *help)
+int hist_browser__run(struct hist_browser *browser, const char *help,
+		      bool warn_lost_event)
 {
 	int key;
 	char title[160];
@@ -608,8 +639,9 @@ int hist_browser__run(struct hist_browser *browser, const char *help)
 			nr_entries = hist_browser__nr_entries(browser);
 			ui_browser__update_nr_entries(&browser->b, nr_entries);
 
-			if (browser->hists->stats.nr_lost_warned !=
-			    browser->hists->stats.nr_events[PERF_RECORD_LOST]) {
+			if (warn_lost_event &&
+			    (browser->hists->stats.nr_lost_warned !=
+			    browser->hists->stats.nr_events[PERF_RECORD_LOST])) {
 				browser->hists->stats.nr_lost_warned =
 					browser->hists->stats.nr_events[PERF_RECORD_LOST];
 				ui_browser__warn_lost_events(&browser->b);
@@ -637,9 +669,17 @@ int hist_browser__run(struct hist_browser *browser, const char *help)
 			/* Collapse the whole world. */
 			hist_browser__set_folding(browser, false);
 			break;
+		case 'c':
+			/* Collapse the selected entry. */
+			hist_browser__set_folding_selected(browser, false);
+			break;
 		case 'E':
 			/* Expand the whole world. */
 			hist_browser__set_folding(browser, true);
+			break;
+		case 'e':
+			/* Expand the selected entry. */
+			hist_browser__set_folding_selected(browser, true);
 			break;
 		case 'H':
 			browser->show_headers = !browser->show_headers;
@@ -740,6 +780,7 @@ static int hist_browser__show_callchain_list(struct hist_browser *browser,
 	char bf[1024], *alloc_str;
 	char buf[64], *alloc_str2;
 	const char *str;
+	int ret = 1;
 
 	if (arg->row_offset != 0) {
 		arg->row_offset--;
@@ -753,12 +794,8 @@ static int hist_browser__show_callchain_list(struct hist_browser *browser,
 				       browser->show_dso);
 
 	if (symbol_conf.show_branchflag_count) {
-		if (need_percent)
-			callchain_list_counts__printf_value(node, chain, NULL,
-							    buf, sizeof(buf));
-		else
-			callchain_list_counts__printf_value(NULL, chain, NULL,
-							    buf, sizeof(buf));
+		callchain_list_counts__printf_value(chain, NULL,
+						    buf, sizeof(buf));
 
 		if (asprintf(&alloc_str2, "%s%s", str, buf) < 0)
 			str = "Not enough memory!";
@@ -777,10 +814,10 @@ static int hist_browser__show_callchain_list(struct hist_browser *browser,
 	}
 
 	print(browser, chain, str, offset, row, arg);
-
 	free(alloc_str);
 	free(alloc_str2);
-	return 1;
+
+	return ret;
 }
 
 static bool check_percent_display(struct rb_node *node, u64 parent_total)
@@ -1277,9 +1314,11 @@ static int hist_browser__show_entry(struct hist_browser *browser,
 			.is_current_entry = current_entry,
 		};
 
-		printed += hist_browser__show_callchain(browser, entry, 1, row,
-					hist_browser__show_callchain_entry, &arg,
-					hist_browser__check_output_full);
+		printed += hist_browser__show_callchain(browser,
+				entry, 1, row,
+				hist_browser__show_callchain_entry,
+				&arg,
+				hist_browser__check_output_full);
 	}
 
 	return printed;
@@ -2284,7 +2323,7 @@ static int switch_data_file(void)
 		return ret;
 
 	memset(options, 0, sizeof(options));
-	memset(options, 0, sizeof(abs_path));
+	memset(abs_path, 0, sizeof(abs_path));
 
 	while ((dent = readdir(pwd_dir))) {
 		char path[PATH_MAX];
@@ -2726,7 +2765,8 @@ static int perf_evsel__hists_browse(struct perf_evsel *evsel, int nr_events,
 				    bool left_exits,
 				    struct hist_browser_timer *hbt,
 				    float min_pcnt,
-				    struct perf_env *env)
+				    struct perf_env *env,
+				    bool warn_lost_event)
 {
 	struct hists *hists = evsel__hists(evsel);
 	struct hist_browser *browser = perf_evsel_browser__new(evsel, hbt, env);
@@ -2807,7 +2847,8 @@ static int perf_evsel__hists_browse(struct perf_evsel *evsel, int nr_events,
 
 		nr_options = 0;
 
-		key = hist_browser__run(browser, helpline);
+		key = hist_browser__run(browser, helpline,
+					warn_lost_event);
 
 		if (browser->he_selection != NULL) {
 			thread = hist_browser__selected_thread(browser);
@@ -3147,7 +3188,8 @@ static void perf_evsel_menu__write(struct ui_browser *browser,
 
 static int perf_evsel_menu__run(struct perf_evsel_menu *menu,
 				int nr_events, const char *help,
-				struct hist_browser_timer *hbt)
+				struct hist_browser_timer *hbt,
+				bool warn_lost_event)
 {
 	struct perf_evlist *evlist = menu->b.priv;
 	struct perf_evsel *pos;
@@ -3166,7 +3208,9 @@ static int perf_evsel_menu__run(struct perf_evsel_menu *menu,
 		case K_TIMER:
 			hbt->timer(hbt->arg);
 
-			if (!menu->lost_events_warned && menu->lost_events) {
+			if (!menu->lost_events_warned &&
+			    menu->lost_events &&
+			    warn_lost_event) {
 				ui_browser__warn_lost_events(&menu->b);
 				menu->lost_events_warned = true;
 			}
@@ -3187,7 +3231,8 @@ browse_hists:
 			key = perf_evsel__hists_browse(pos, nr_events, help,
 						       true, hbt,
 						       menu->min_pcnt,
-						       menu->env);
+						       menu->env,
+						       warn_lost_event);
 			ui_browser__show_title(&menu->b, title);
 			switch (key) {
 			case K_TAB:
@@ -3245,7 +3290,8 @@ static int __perf_evlist__tui_browse_hists(struct perf_evlist *evlist,
 					   int nr_entries, const char *help,
 					   struct hist_browser_timer *hbt,
 					   float min_pcnt,
-					   struct perf_env *env)
+					   struct perf_env *env,
+					   bool warn_lost_event)
 {
 	struct perf_evsel *pos;
 	struct perf_evsel_menu menu = {
@@ -3272,13 +3318,15 @@ static int __perf_evlist__tui_browse_hists(struct perf_evlist *evlist,
 			menu.b.width = line_len;
 	}
 
-	return perf_evsel_menu__run(&menu, nr_entries, help, hbt);
+	return perf_evsel_menu__run(&menu, nr_entries, help,
+				    hbt, warn_lost_event);
 }
 
 int perf_evlist__tui_browse_hists(struct perf_evlist *evlist, const char *help,
 				  struct hist_browser_timer *hbt,
 				  float min_pcnt,
-				  struct perf_env *env)
+				  struct perf_env *env,
+				  bool warn_lost_event)
 {
 	int nr_entries = evlist->nr_entries;
 
@@ -3288,7 +3336,7 @@ single_entry:
 
 		return perf_evsel__hists_browse(first, nr_entries, help,
 						false, hbt, min_pcnt,
-						env);
+						env, warn_lost_event);
 	}
 
 	if (symbol_conf.event_group) {
@@ -3305,5 +3353,6 @@ single_entry:
 	}
 
 	return __perf_evlist__tui_browse_hists(evlist, nr_entries, help,
-					       hbt, min_pcnt, env);
+					       hbt, min_pcnt, env,
+					       warn_lost_event);
 }

@@ -24,7 +24,8 @@
 #include <linux/tracepoint.h>
 #include <linux/err.h>
 #include <linux/slab.h>
-#include <linux/sched.h>
+#include <linux/sched/signal.h>
+#include <linux/sched/task.h>
 #include <linux/static_key.h>
 
 extern struct tracepoint * const __start___tracepoints_ptrs[];
@@ -211,11 +212,10 @@ static int tracepoint_add_func(struct tracepoint *tp,
 	}
 
 	/*
-	 * rcu_assign_pointer has a smp_wmb() which makes sure that the new
-	 * probe callbacks array is consistent before setting a pointer to it.
-	 * This array is referenced by __DO_TRACE from
-	 * include/linux/tracepoints.h. A matching smp_read_barrier_depends()
-	 * is used.
+	 * rcu_assign_pointer has as smp_store_release() which makes sure
+	 * that the new probe callbacks array is consistent before setting
+	 * a pointer to it.  This array is referenced by __DO_TRACE from
+	 * include/linux/tracepoint.h using rcu_dereference_sched().
 	 */
 	rcu_assign_pointer(tp->funcs, tp_funcs);
 	if (!static_key_enabled(&tp->key))

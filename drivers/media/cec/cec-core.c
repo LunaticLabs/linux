@@ -112,10 +112,6 @@ static int __must_check cec_devnode_register(struct cec_devnode *devnode,
 	int minor;
 	int ret;
 
-	/* Initialization */
-	INIT_LIST_HEAD(&devnode->fhs);
-	mutex_init(&devnode->lock);
-
 	/* Part 1: Find a free minor number */
 	mutex_lock(&cec_devnode_lock);
 	minor = find_next_zero_bit(cec_devnode_nums, CEC_NUM_DEVICES, 0);
@@ -137,24 +133,17 @@ static int __must_check cec_devnode_register(struct cec_devnode *devnode,
 
 	/* Part 2: Initialize and register the character device */
 	cdev_init(&devnode->cdev, &cec_devnode_fops);
-	devnode->cdev.kobj.parent = &devnode->dev.kobj;
 	devnode->cdev.owner = owner;
 
-	ret = cdev_add(&devnode->cdev, devnode->dev.devt, 1);
-	if (ret < 0) {
-		pr_err("%s: cdev_add failed\n", __func__);
+	ret = cdev_device_add(&devnode->cdev, &devnode->dev);
+	if (ret) {
+		pr_err("%s: cdev_device_add failed\n", __func__);
 		goto clr_bit;
 	}
-
-	ret = device_add(&devnode->dev);
-	if (ret)
-		goto cdev_del;
 
 	devnode->registered = true;
 	return 0;
 
-cdev_del:
-	cdev_del(&devnode->cdev);
 clr_bit:
 	mutex_lock(&cec_devnode_lock);
 	clear_bit(devnode->minor, cec_devnode_nums);
@@ -171,8 +160,9 @@ clr_bit:
  * This function can safely be called if the device node has never been
  * registered or has already been unregistered.
  */
-static void cec_devnode_unregister(struct cec_devnode *devnode)
+static void cec_devnode_unregister(struct cec_adapter *adap)
 {
+	struct cec_devnode *devnode = &adap->devnode;
 	struct cec_fh *fh;
 
 	mutex_lock(&devnode->lock);
@@ -190,10 +180,32 @@ static void cec_devnode_unregister(struct cec_devnode *devnode)
 	devnode->unregistered = true;
 	mutex_unlock(&devnode->lock);
 
-	device_del(&devnode->dev);
-	cdev_del(&devnode->cdev);
+	mutex_lock(&adap->lock);
+	__cec_s_phys_addr(adap, CEC_PHYS_ADDR_INVALID, false);
+	__cec_s_log_addrs(adap, NULL, false);
+	mutex_unlock(&adap->lock);
+
+	cdev_device_del(&devnode->cdev, &devnode->dev);
 	put_device(&devnode->dev);
 }
+
+#ifdef CONFIG_CEC_NOTIFIER
+static void cec_cec_notify(struct cec_adapter *adap, u16 pa)
+{
+	cec_s_phys_addr(adap, pa, false);
+}
+
+void cec_register_cec_notifier(struct cec_adapter *adap,
+			       struct cec_notifier *notifier)
+{
+	if (WARN_ON(!cec_is_registered(adap)))
+		return;
+
+	adap->notifier = notifier;
+	cec_notifier_register(adap->notifier, adap, cec_cec_notify);
+}
+EXPORT_SYMBOL_GPL(cec_register_cec_notifier);
+#endif
 
 struct cec_adapter *cec_allocate_adapter(const struct cec_adap_ops *ops,
 					 void *priv, const char *name, u32 caps,
@@ -201,6 +213,10 @@ struct cec_adapter *cec_allocate_adapter(const struct cec_adap_ops *ops,
 {
 	struct cec_adapter *adap;
 	int res;
+
+#ifndef CONFIG_MEDIA_CEC_RC
+	caps &= ~CEC_CAP_RC;
+#endif
 
 	if (WARN_ON(!caps))
 		return ERR_PTR(-EINVAL);
@@ -213,9 +229,11 @@ struct cec_adapter *cec_allocate_adapter(const struct cec_adap_ops *ops,
 		return ERR_PTR(-ENOMEM);
 	strlcpy(adap->name, name, sizeof(adap->name));
 	adap->phys_addr = CEC_PHYS_ADDR_INVALID;
+	adap->cec_pin_is_high = true;
 	adap->log_addrs.cec_version = CEC_OP_CEC_VERSION_2_0;
 	adap->log_addrs.vendor_id = CEC_VENDOR_ID_NONE;
 	adap->capabilities = caps;
+	adap->needs_hpd = caps & CEC_CAP_NEEDS_HPD;
 	adap->available_log_addrs = available_las;
 	adap->sequence = 0;
 	adap->ops = ops;
@@ -226,6 +244,10 @@ struct cec_adapter *cec_allocate_adapter(const struct cec_adap_ops *ops,
 	INIT_LIST_HEAD(&adap->wait_queue);
 	init_waitqueue_head(&adap->kthread_waitq);
 
+	/* adap->devnode initialization */
+	INIT_LIST_HEAD(&adap->devnode.fhs);
+	mutex_init(&adap->devnode.lock);
+
 	adap->kthread = kthread_run(cec_thread_func, adap, "cec-%s", name);
 	if (IS_ERR(adap->kthread)) {
 		pr_err("cec-%s: kernel_thread() failed\n", name);
@@ -234,12 +256,12 @@ struct cec_adapter *cec_allocate_adapter(const struct cec_adap_ops *ops,
 		return ERR_PTR(res);
 	}
 
+#ifdef CONFIG_MEDIA_CEC_RC
 	if (!(caps & CEC_CAP_RC))
 		return adap;
 
-#if IS_REACHABLE(CONFIG_RC_CORE)
 	/* Prepare the RC input device */
-	adap->rc = rc_allocate_device();
+	adap->rc = rc_allocate_device(RC_DRIVER_SCANCODE);
 	if (!adap->rc) {
 		pr_err("cec-%s: failed to allocate memory for rc_dev\n",
 		       name);
@@ -248,25 +270,22 @@ struct cec_adapter *cec_allocate_adapter(const struct cec_adap_ops *ops,
 		return ERR_PTR(-ENOMEM);
 	}
 
-	snprintf(adap->input_name, sizeof(adap->input_name),
+	snprintf(adap->device_name, sizeof(adap->device_name),
 		 "RC for %s", name);
 	snprintf(adap->input_phys, sizeof(adap->input_phys),
 		 "%s/input0", name);
 
-	adap->rc->input_name = adap->input_name;
+	adap->rc->device_name = adap->device_name;
 	adap->rc->input_phys = adap->input_phys;
 	adap->rc->input_id.bustype = BUS_CEC;
 	adap->rc->input_id.vendor = 0;
 	adap->rc->input_id.product = 0;
 	adap->rc->input_id.version = 1;
-	adap->rc->driver_type = RC_DRIVER_SCANCODE;
 	adap->rc->driver_name = CEC_NAME;
-	adap->rc->allowed_protocols = RC_BIT_CEC;
+	adap->rc->allowed_protocols = RC_PROTO_BIT_CEC;
 	adap->rc->priv = adap;
 	adap->rc->map_name = RC_MAP_CEC;
 	adap->rc->timeout = MS_TO_NS(100);
-#else
-	adap->capabilities &= ~CEC_CAP_RC;
 #endif
 	return adap;
 }
@@ -286,9 +305,9 @@ int cec_register_adapter(struct cec_adapter *adap,
 	adap->owner = parent->driver->owner;
 	adap->devnode.dev.parent = parent;
 
-#if IS_REACHABLE(CONFIG_RC_CORE)
-	adap->rc->dev.parent = parent;
+#ifdef CONFIG_MEDIA_CEC_RC
 	if (adap->capabilities & CEC_CAP_RC) {
+		adap->rc->dev.parent = parent;
 		res = rc_register_device(adap->rc);
 
 		if (res) {
@@ -303,7 +322,7 @@ int cec_register_adapter(struct cec_adapter *adap,
 
 	res = cec_devnode_register(&adap->devnode, adap->owner);
 	if (res) {
-#if IS_REACHABLE(CONFIG_RC_CORE)
+#ifdef CONFIG_MEDIA_CEC_RC
 		/* Note: rc_unregister also calls rc_free */
 		rc_unregister_device(adap->rc);
 		adap->rc = NULL;
@@ -312,7 +331,7 @@ int cec_register_adapter(struct cec_adapter *adap,
 	}
 
 	dev_set_drvdata(&adap->devnode.dev, adap);
-#ifdef CONFIG_MEDIA_CEC_DEBUG
+#ifdef CONFIG_DEBUG_FS
 	if (!top_cec_dir)
 		return 0;
 
@@ -338,13 +357,17 @@ void cec_unregister_adapter(struct cec_adapter *adap)
 	if (IS_ERR_OR_NULL(adap))
 		return;
 
-#if IS_REACHABLE(CONFIG_RC_CORE)
+#ifdef CONFIG_MEDIA_CEC_RC
 	/* Note: rc_unregister also calls rc_free */
 	rc_unregister_device(adap->rc);
 	adap->rc = NULL;
 #endif
 	debugfs_remove_recursive(adap->cec_dir);
-	cec_devnode_unregister(&adap->devnode);
+#ifdef CONFIG_CEC_NOTIFIER
+	if (adap->notifier)
+		cec_notifier_unregister(adap->notifier);
+#endif
+	cec_devnode_unregister(adap);
 }
 EXPORT_SYMBOL_GPL(cec_unregister_adapter);
 
@@ -352,13 +375,12 @@ void cec_delete_adapter(struct cec_adapter *adap)
 {
 	if (IS_ERR_OR_NULL(adap))
 		return;
-	mutex_lock(&adap->lock);
-	__cec_s_phys_addr(adap, CEC_PHYS_ADDR_INVALID, false);
-	mutex_unlock(&adap->lock);
 	kthread_stop(adap->kthread);
 	if (adap->kthread_config)
 		kthread_stop(adap->kthread_config);
-#if IS_REACHABLE(CONFIG_RC_CORE)
+	if (adap->ops->adap_free)
+		adap->ops->adap_free(adap);
+#ifdef CONFIG_MEDIA_CEC_RC
 	rc_free_device(adap->rc);
 #endif
 	kfree(adap);
@@ -370,17 +392,14 @@ EXPORT_SYMBOL_GPL(cec_delete_adapter);
  */
 static int __init cec_devnode_init(void)
 {
-	int ret;
+	int ret = alloc_chrdev_region(&cec_dev_t, 0, CEC_NUM_DEVICES, CEC_NAME);
 
-	pr_info("Linux cec interface: v0.10\n");
-	ret = alloc_chrdev_region(&cec_dev_t, 0, CEC_NUM_DEVICES,
-				  CEC_NAME);
 	if (ret < 0) {
 		pr_warn("cec: unable to allocate major\n");
 		return ret;
 	}
 
-#ifdef CONFIG_MEDIA_CEC_DEBUG
+#ifdef CONFIG_DEBUG_FS
 	top_cec_dir = debugfs_create_dir("cec", NULL);
 	if (IS_ERR_OR_NULL(top_cec_dir)) {
 		pr_warn("cec: Failed to create debugfs cec dir\n");

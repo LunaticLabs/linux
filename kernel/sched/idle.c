@@ -2,6 +2,7 @@
  * Generic entry point for the idle threads
  */
 #include <linux/sched.h>
+#include <linux/sched/idle.h>
 #include <linux/cpu.h>
 #include <linux/cpuidle.h>
 #include <linux/cpuhotplug.h>
@@ -9,6 +10,7 @@
 #include <linux/mm.h>
 #include <linux/stackprotector.h>
 #include <linux/suspend.h>
+#include <linux/livepatch.h>
 
 #include <asm/tlb.h>
 
@@ -156,7 +158,7 @@ static void cpuidle_idle_call(void)
 	}
 
 	/*
-	 * Suspend-to-idle ("freeze") is a system state in which all user space
+	 * Suspend-to-idle ("s2idle") is a system state in which all user space
 	 * has been frozen, all I/O devices have been suspended and the only
 	 * activity happens here and in iterrupts (if any).  In that case bypass
 	 * the cpuidle governor and go stratight for the deepest idle state
@@ -165,9 +167,9 @@ static void cpuidle_idle_call(void)
 	 * until a proper wakeup interrupt happens.
 	 */
 
-	if (idle_should_freeze() || dev->use_deepest_state) {
-		if (idle_should_freeze()) {
-			entered_state = cpuidle_enter_freeze(drv, dev);
+	if (idle_should_enter_s2idle() || dev->use_deepest_state) {
+		if (idle_should_enter_s2idle()) {
+			entered_state = cpuidle_enter_s2idle(drv, dev);
 			if (entered_state > 0) {
 				local_irq_enable();
 				goto exit_idle;
@@ -207,6 +209,7 @@ exit_idle:
  */
 static void do_idle(void)
 {
+	int cpu = smp_processor_id();
 	/*
 	 * If the arch has a polling bit, we maintain an invariant:
 	 *
@@ -223,7 +226,7 @@ static void do_idle(void)
 		check_pgt_cache();
 		rmb();
 
-		if (cpu_is_offline(smp_processor_id())) {
+		if (cpu_is_offline(cpu)) {
 			cpuhp_report_idle_dead();
 			arch_cpu_idle_dead();
 		}
@@ -263,7 +266,10 @@ static void do_idle(void)
 	smp_mb__after_atomic();
 
 	sched_ttwu_pending();
-	schedule_preempt_disabled();
+	schedule_idle();
+
+	if (unlikely(klp_patch_pending(current)))
+		klp_update_patch_state(current);
 }
 
 bool cpu_in_idle(unsigned long pc)
