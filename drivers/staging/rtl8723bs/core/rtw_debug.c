@@ -17,7 +17,7 @@
 #include <drv_types.h>
 #include <rtw_debug.h>
 
-u32 GlobalDebugLevel = _drv_err_;
+u32 GlobalDebugLevel = _drv_info_;
 
 #ifdef DEBUG_RTL871X
 
