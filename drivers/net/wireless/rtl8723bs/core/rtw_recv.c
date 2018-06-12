@@ -87,17 +87,17 @@ sint _rtw_init_recv_priv(struct recv_priv *precvpriv, struct adapter *padapter)
 		precvframe++;
 
 	}
+        res = rtw_hal_init_recv_priv(padapter);
 
-	res = rtw_hal_init_recv_priv(padapter);
+        timer_setup(&precvpriv->signal_stat_timer, rtw_signal_stat_timer_hdl,
+                    0);
 
-	rtw_init_timer(&precvpriv->signal_stat_timer, padapter, rtw_signal_stat_timer_hdl);
+        precvpriv->signal_stat_sampling_interval = 2000; /* ms */
 
-	precvpriv->signal_stat_sampling_interval = 2000; /* ms */
-
-	rtw_set_signal_stat_timer(precvpriv);
+        rtw_set_signal_stat_timer(precvpriv);
 
 exit:
-	return res;
+        return res;
 }
 
 void _rtw_free_recv_priv(struct recv_priv *precvpriv)
