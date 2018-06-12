@@ -1168,15 +1168,15 @@ void rtw_init_pwrctrl_priv(struct adapter *padapter)
 
 	rtw_hal_set_hwreg(padapter, HW_VAR_SET_RPWM, (u8 *)(&pwrctrlpriv->rpwm));
 
-	_init_workitem(&pwrctrlpriv->cpwm_event, cpwm_event_callback, NULL);
+        _init_workitem(&pwrctrlpriv->cpwm_event, cpwm_event_callback, NULL);
 
-	pwrctrlpriv->brpwmtimeout = false;
-	_init_workitem(&pwrctrlpriv->rpwmtimeoutwi, rpwmtimeout_workitem_callback, NULL);
+        pwrctrlpriv->brpwmtimeout = false;
+        pwrctrlpriv->adapter = padapter;
+        _init_workitem(&pwrctrlpriv->rpwmtimeoutwi, rpwmtimeout_workitem_callback, NULL);
         timer_setup(&pwrctrlpriv->pwr_rpwm_timer, pwr_rpwm_timeout_handler, 0);
         timer_setup(&pwrctrlpriv->pwr_state_check_timer,
                     pwr_state_check_handler, 0);
 
-	rtw_init_timer(&pwrctrlpriv->pwr_state_check_timer, padapter, pwr_state_check_handler);
 
 	pwrctrlpriv->wowlan_mode = false;
 	pwrctrlpriv->wowlan_ap_mode = false;
